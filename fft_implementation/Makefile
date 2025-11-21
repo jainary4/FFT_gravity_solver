@@ -4,7 +4,7 @@ TARGET = fft
   
 all: $(TARGET)  
   
-$(TARGET): fft.cpp complex.h dit_fft.h inverse_dit.h denoise.h derivative.h validate_n_evaluate.h  
+$(TARGET): fft.cpp complex.h dit_fft.h inverse_fft.h denoise.h derivative.h validate_n_evaluate.h  
 	$(CXX) $(CXXFLAGS) fft.cpp -o $(TARGET)  
   
 run: $(TARGET)  
