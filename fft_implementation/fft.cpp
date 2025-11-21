@@ -1,7 +1,6 @@
 #include "complex.h"         // Definition of struct complex, Calculation of WN[]
 #include "dit_fft.h"         // DIT-FFT
 #include "inverse_fft.h"     // Inverse DIT-FFT
-#include "denoise.h"
 #include <random>
 #include <cmath>
 #include <iostream>
