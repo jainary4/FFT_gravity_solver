@@ -1,28 +1,21 @@
-CC = clang
+CC      = icc
+CFLAGS  = -O3 -march=native -fp-model precise -std=c11 -qopenmp -Wall
+LDFLAGS = -qopenmp -lm
 
-# Homebrew libomp prefix (keg-only). Make picks it up at build time.
-LIBOMP_PREFIX := $(shell brew --prefix libomp)
+# Adjust these to your actual filenames if needed
+SRCS = \
+    bh_collision_example.c \
+    bh_collision.c
 
-# Compiler flags: enable OpenMP for clang and point to libomp headers
-CFLAGS = -O3 -march=native -std=c11 -Wall \
-		 -Xpreprocessor -fopenmp -I$(LIBOMP_PREFIX)/include
-
-# Linker flags: point to libomp library
-LDFLAGS = -L$(LIBOMP_PREFIX)/lib -lomp
-
-SRCS = main.c particles.c mesh.c random.c
 OBJS = $(SRCS:.c=.o)
-TARGET = sim
 
-all: $(TARGET)
+all: bh_test
 
-$(TARGET): $(OBJS)
-	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS) -lm
+bh_test: $(OBJS)
+	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
 
 %.o: %.c
-	$(CC) $(CFLAGS) -c -o $@ $<
+	$(CC) $(CFLAGS) -c $< -o $@
 
 clean:
-	rm -f $(OBJS) $(TARGET)
-
-.PHONY: all clean
+	rm -f *.o bh_test
