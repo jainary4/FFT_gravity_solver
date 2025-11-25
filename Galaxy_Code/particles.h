@@ -4,8 +4,8 @@
 #include "structs.h"
 
 // Initialization functions
-void initialize_plummer_positions(Vector3 *positions, int N, float a, Vector3 center);
-void initialize_velocities(Vector3 *velocities, int N, float sigma);
+void initialize_plummer_positions(Vector3 *positions, int N, double a, Vector3 center);
+void initialize_velocities(Vector3 *velocities, int N, double sigma);
 
 // System operations
 ParticleSystem* create_particle_system(void);
