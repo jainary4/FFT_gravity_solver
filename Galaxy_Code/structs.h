@@ -3,22 +3,22 @@
 #define STRUCTS_H
 
 typedef struct {
-    float x, y, z;
+    double x, y, z;
 } Vector3;
 
 typedef struct {
     Vector3 *positions;
     Vector3 *velocities;
-    float *masses;
+    double *masses;
     int   *types; 
     int N;
 } ParticleSystem;
 
 typedef struct {
-    float ***rho; // 3-d vector 
+    double ***rho; // 3-d vector 
     int N;
-    float cell_size;
-    float box_size;
+    double cell_size;
+    double box_size;
 } ParticleMesh;
 
 #endif
