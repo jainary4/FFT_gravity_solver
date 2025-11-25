@@ -13,7 +13,11 @@
 #define TYPE_DM   1
 #define TYPE_BH   2
 
-/* Fixed collision radii in code units (kpc). */
+/* Fixed collision radii in code units (kpc).
+ * We use simple numerical radii to avoid expensive
+ * Schwarzschild radius evaluations each step.
+ * Both are expressed in terms of the grid cell size L/NMESH.
+ */
 #define BH_STAR_COLLISION_RADIUS  (1.0f * (L / (float)NMESH))
 #define BH_BH_COLLISION_RADIUS    (1.5f * (L / (float)NMESH))
 
@@ -21,18 +25,23 @@
  * Perform one black hole collision / merge step.
  *
  * Inputs:
- *   sys        : particle system
- *   bh_indices : array of indices into sys->[...] that are BHs
- *   n_bh       : in/out, number of active BHs in bh_indices
+ *   sys        : particle system (positions, velocities, masses, types, N)
+ *   bh_indices : array of indices into sys->[positions,velocities,masses,types]
+ *                that correspond to black holes. Size at least *n_bh.
+ *   n_bh       : in/out, number of active BHs in bh_indices.
  *
  * Behaviour:
- *   - Uses NMESH^3 grid geometry + a cell-linked list to find neighbours.
+ *   - Uses an NMESH^3 grid and a cell-linked list to find neighbours.
  *   - Stars within BH_STAR_COLLISION_RADIUS of a BH are swallowed.
  *   - BHs within BH_BH_COLLISION_RADIUS of each other are merged.
  *   - Dark matter never collides.
  *   - Removed particles are actually removed from the ParticleSystem by
  *     swapping with the last active particle and decrementing sys->N.
  *   - bh_indices[] and *n_bh are kept consistent with these removals.
+ *
+ * Parallelisation:
+ *   - The construction of the cell-linked list is parallelised with OpenMP.
+ *     The neighbour search and merges are kept serial (N_BH is small).
  */
 void bh_collision_step(ParticleSystem *sys,
                        int           *bh_indices,

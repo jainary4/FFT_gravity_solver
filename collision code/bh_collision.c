@@ -1,5 +1,7 @@
 #include <stdlib.h>
 #include <math.h>
+#include <omp.h>
+
 #include "constants.h"
 #include "structs.h"
 #include "bh_collision.h"
@@ -7,27 +9,27 @@
 /* ----------------- small helpers ----------------- */
 
 /* Periodic minimum-image separation in box [0, L). */
-static inline float periodic_delta(float dx)
+static inline double periodic_delta(double dx)
 {
-    if (dx >  0.5f * L) dx -= L;
-    if (dx < -0.5f * L) dx += L;
+    if (dx >  0.5 * L) dx -= L;
+    if (dx < -0.5 * L) dx += L;
     return dx;
 }
 
 /* Map (x,y,z) to cell index on NMESH^3 grid with box size L. */
-static int cell_index(float x, float y, float z,
+static int cell_index(double x, double y, double z,
                       int *ix, int *iy, int *iz)
 {
-    const int   N = NMESH;
-    const float h = (float)(L / (float)NMESH);
+    const int    N = NMESH;
+    const double h = L / (double)NMESH;
 
-    float xg = x / h;
-    float yg = y / h;
-    float zg = z / h;
+    double xg = x / h;
+    double yg = y / h;
+    double zg = z / h;
 
-    int i = (int)floorf(xg);
-    int j = (int)floorf(yg);
-    int k = (int)floorf(zg);
+    int i = (int)floor(xg);
+    int j = (int)floor(yg);
+    int k = (int)floor(zg);
 
     /* periodic wrap to [0, N-1] */
     i = (i % N + N) % N;
@@ -42,11 +44,11 @@ static int cell_index(float x, float y, float z,
 }
 
 /* Squared distance with periodic BCs. */
-static float distance2_periodic(const Vector3 *a, const Vector3 *b)
+static double distance2_periodic(const Vector3 *a, const Vector3 *b)
 {
-    float dx = periodic_delta(b->x - a->x);
-    float dy = periodic_delta(b->y - a->y);
-    float dz = periodic_delta(b->z - a->z);
+    double dx = periodic_delta(b->x - a->x);
+    double dy = periodic_delta(b->y - a->y);
+    double dz = periodic_delta(b->z - a->z);
     return dx*dx + dy*dy + dz*dz;
 }
 
@@ -62,7 +64,7 @@ static float distance2_periodic(const Vector3 *a, const Vector3 *b)
  *
  * Complexity:
  *   - O(sys->N) per call, plus O(N_BH) per removed BH.
- *   - N_BH is tiny (~2¨C10), so effectively O(N).
+ *   - N_BH is tiny (~10), so effectively O(N).
  * -------------------------------------------------- */
 static void compact_particle_system(ParticleSystem *sys,
                                     int           *bh_indices,
@@ -70,7 +72,7 @@ static void compact_particle_system(ParticleSystem *sys,
 {
     int i = 0;
     while (i < sys->N) {
-        if (sys->masses[i] <= 0.0f) {
+        if (sys->masses[i] <= 0.0) {
             int last = sys->N - 1;
             int type_i    = sys->types[i];
             int type_last = sys->types[last];
@@ -97,10 +99,19 @@ static void compact_particle_system(ParticleSystem *sys,
                     }
                 }
 
-                /* Move last particle into slot i. */
-                sys->positions[i]  = sys->positions[last];
+                /* Swap particle data: positions, velocities, mass, type. */
+                Vector3 tmp_pos = sys->positions[i];
+                sys->positions[i] = sys->positions[last];
+                sys->positions[last] = tmp_pos;
+
+                Vector3 tmp_vel = sys->velocities[i];
                 sys->velocities[i] = sys->velocities[last];
-                sys->masses[i]     = sys->masses[last];
+                sys->velocities[last] = tmp_vel;
+
+                double tmp_m = sys->masses[i];
+                sys->masses[i] = sys->masses[last];
+                sys->masses[last] = tmp_m;
+
                 sys->types[i]      = sys->types[last];
             }
 
@@ -115,21 +126,29 @@ static void compact_particle_system(ParticleSystem *sys,
 
 /* --------------------------------------------------
  * Main BH collision / merge step.
+ *
+ * Parallelisation strategy:
+ *   - Build the cell-linked list (head[cell], next[p]) in parallel
+ *     over all particles using OpenMP, with an atomic capture on
+ *     head[cell] to avoid races.
+ *   - The BH neighbour search and compaction are kept serial, because
+ *     the number of BHs is tiny (~10) and these operations involve
+ *     complex shared updates.
  * -------------------------------------------------- */
 void bh_collision_step(ParticleSystem *sys,
                        int           *bh_indices,
                        int           *n_bh)
 {
     if (!sys || !bh_indices || !n_bh) return;
-    if (*n_bh <= 0) return;
+    if (*n_bh <= 0 || sys->N <= 0)     return;
 
-    const int   N_cells       = NMESH * NMESH * NMESH;
-    const float h             = (float)(L / (float)NMESH);
-    const float search_radius = (BH_STAR_COLLISION_RADIUS > BH_BH_COLLISION_RADIUS)
+    const int    N_cells       = NMESH * NMESH * NMESH;
+    const double h             = L / (double)NMESH;
+    const double search_radius = (BH_STAR_COLLISION_RADIUS > BH_BH_COLLISION_RADIUS)
                                 ? BH_STAR_COLLISION_RADIUS
                                 : BH_BH_COLLISION_RADIUS;
-    const float r2_star = BH_STAR_COLLISION_RADIUS * BH_STAR_COLLISION_RADIUS;
-    const float r2_bh   = BH_BH_COLLISION_RADIUS   * BH_BH_COLLISION_RADIUS;
+    const double r2_star = BH_STAR_COLLISION_RADIUS * BH_STAR_COLLISION_RADIUS;
+    const double r2_bh   = BH_BH_COLLISION_RADIUS   * BH_BH_COLLISION_RADIUS;
 
     /* --------- Build cell-linked list: head[cell], next[particle] --------- */
 
@@ -137,16 +156,24 @@ void bh_collision_step(ParticleSystem *sys,
     int *next = (int*)malloc((size_t)sys->N   * sizeof(int));
 
     if (!head || !next) {
-        if (head) free(head);
-        if (next) free(next);
+        free(head);
+        free(next);
         return;
     }
 
-    for (int c = 0; c < N_cells; ++c)
+    for (int c = 0; c < N_cells; ++c) {
         head[c] = -1;
+    }
 
+    #pragma omp parallel for
     for (int p = 0; p < sys->N; ++p) {
-        if (sys->masses[p] <= 0.0f) {
+        next[p] = -1;
+    }
+
+    /* We only put stars and BH into the cell list (DM is ignored). */
+    #pragma omp parallel for
+    for (int p = 0; p < sys->N; ++p) {
+        if (sys->masses[p] <= 0.0) {
             next[p] = -1;
             continue;
         }
@@ -163,17 +190,21 @@ void bh_collision_step(ParticleSystem *sys,
                               sys->positions[p].z,
                               &ix, &iy, &iz);
 
-        next[p]   = head[cell];
-        head[cell] = p;
+        /* Atomic push-front into linked list for this cell. */
+        #pragma omp atomic capture
+        {
+            next[p]  = head[cell];
+            head[cell] = p;
+        }
     }
 
-    /* --------- Loop over BHs and process collisions --------- */
+    /* --------- For each BH, search neighbours within search_radius --------- */
 
-    for (int bi = 0; bi < *n_bh; ++bi) {
-        int i_bh = bh_indices[bi];
+    for (int ibh_list = 0; ibh_list < *n_bh; ++ibh_list) {
+        int i_bh = bh_indices[ibh_list];
 
         if (i_bh < 0 || i_bh >= sys->N) continue;
-        if (sys->masses[i_bh] <= 0.0f)  continue;
+        if (sys->masses[i_bh] <= 0.0)  continue;
         if (sys->types[i_bh] != TYPE_BH) continue;
 
         Vector3 pos_bh = sys->positions[i_bh];
@@ -181,7 +212,7 @@ void bh_collision_step(ParticleSystem *sys,
         int ixBH, iyBH, izBH;
         (void)cell_index(pos_bh.x, pos_bh.y, pos_bh.z, &ixBH, &iyBH, &izBH);
 
-        int nCellR = (int)ceilf(search_radius / h);
+        int nCellR = (int)ceil(search_radius / h);
 
         for (int ix = ixBH - nCellR; ix <= ixBH + nCellR; ++ix) {
             if (ix < 0 || ix >= NMESH) continue;
@@ -192,25 +223,53 @@ void bh_collision_step(ParticleSystem *sys,
 
                     int cell = ix + NMESH * (iy + NMESH * iz);
 
-                    for (int p = head[cell]; p != -1; p = next[p]) {
-                        if (p == i_bh) continue;
-                        if (sys->masses[p] <= 0.0f)  continue;
+                    /* We use a (prev, curr) iteration pattern so we can
+                     * unlink eaten particles from the cell list on the fly,
+                     * without breaking the traversal.
+                     */
+                    int prev = -1;
+                    int p    = head[cell];
 
-                        int t_p = sys->types[p];
-                        if (t_p == TYPE_DM)          continue;
+                    while (p != -1) {
+                        int curr   = p;
+                        int next_p = next[curr];
 
-                        float r2 = distance2_periodic(&pos_bh, &sys->positions[p]);
+                        /* Skip already-removed particles quickly. */
+                        if (sys->masses[curr] <= 0.0) {
+                            /* Unlink curr from list. */
+                            if (prev == -1) head[cell] = next_p;
+                            else            next[prev] = next_p;
+                            p = next_p;
+                            continue;
+                        }
+
+                        if (curr == i_bh) {
+                            prev = curr;
+                            p    = next_p;
+                            continue;
+                        }
+
+                        int t_p = sys->types[curr];
+
+                        if (t_p == TYPE_DM) {
+                            prev = curr;
+                            p    = next_p;
+                            continue;
+                        }
+
+                        double r2 = distance2_periodic(&pos_bh, &sys->positions[curr]);
 
                         if (t_p == TYPE_STAR) {
-                            /* BH¨Cstar collision */
+                            /* BH-star collision */
                             if (r2 <= r2_star) {
-                                float Mbh_old = sys->masses[i_bh];
-                                float Ms      = sys->masses[p];
-                                float Mtot    = Mbh_old + Ms;
+                                double Mbh_old = sys->masses[i_bh];
+                                double Ms      = sys->masses[curr];
+                                double Mtot    = Mbh_old + Ms;
 
                                 Vector3 v_bh = sys->velocities[i_bh];
-                                Vector3 v_s  = sys->velocities[p];
+                                Vector3 v_s  = sys->velocities[curr];
 
+                                /* Momentum conservation: v_new = (M1 v1 + M2 v2)/Mtot */
                                 sys->velocities[i_bh].x =
                                     (Mbh_old * v_bh.x + Ms * v_s.x) / Mtot;
                                 sys->velocities[i_bh].y =
@@ -218,41 +277,49 @@ void bh_collision_step(ParticleSystem *sys,
                                 sys->velocities[i_bh].z =
                                     (Mbh_old * v_bh.z + Ms * v_s.z) / Mtot;
 
+                                /* Optional: shift BH position to center of mass. */
                                 sys->positions[i_bh].x =
                                     (Mbh_old * sys->positions[i_bh].x +
-                                     Ms      * sys->positions[p].x) / Mtot;
+                                     Ms      * sys->positions[curr].x) / Mtot;
                                 sys->positions[i_bh].y =
                                     (Mbh_old * sys->positions[i_bh].y +
-                                     Ms      * sys->positions[p].y) / Mtot;
+                                     Ms      * sys->positions[curr].y) / Mtot;
                                 sys->positions[i_bh].z =
                                     (Mbh_old * sys->positions[i_bh].z +
-                                     Ms      * sys->positions[p].z) / Mtot;
+                                     Ms      * sys->positions[curr].z) / Mtot;
 
                                 sys->masses[i_bh] = Mtot;
+
                                 /* Mark star for removal. */
-                                sys->masses[p]    = 0.0f;
+                                sys->masses[curr] = 0.0;
+
+                                /* Unlink curr from this cell's list. */
+                                if (prev == -1) head[cell] = next_p;
+                                else            next[prev] = next_p;
+
+                                p = next_p;
+                                continue;
                             }
                         }
                         else if (t_p == TYPE_BH) {
-                            /* BH¨CBH collision: avoid double counting (p > i_bh). */
-                            if (p <= i_bh) continue;
-
-                            if (r2 <= r2_bh) {
+                            /* BH-BH collision: avoid double counting (curr > i_bh). */
+                            if (curr > i_bh && r2 <= r2_bh) {
                                 int host  = i_bh;
-                                int guest = p;
+                                int guest = curr;
 
-                                if (sys->masses[p] > sys->masses[i_bh]) {
-                                    host  = p;
+                                if (sys->masses[curr] > sys->masses[i_bh]) {
+                                    host  = curr;
                                     guest = i_bh;
                                 }
 
-                                float M1   = sys->masses[host];
-                                float M2   = sys->masses[guest];
-                                float Mtot = M1 + M2;
+                                double M1   = sys->masses[host];
+                                double M2   = sys->masses[guest];
+                                double Mtot = M1 + M2;
 
                                 Vector3 v1 = sys->velocities[host];
                                 Vector3 v2 = sys->velocities[guest];
 
+                                /* Momentum conservation */
                                 sys->velocities[host].x =
                                     (M1 * v1.x + M2 * v2.x) / Mtot;
                                 sys->velocities[host].y =
@@ -260,6 +327,7 @@ void bh_collision_step(ParticleSystem *sys,
                                 sys->velocities[host].z =
                                     (M1 * v1.z + M2 * v2.z) / Mtot;
 
+                                /* Center-of-mass position */
                                 sys->positions[host].x =
                                     (M1 * sys->positions[host].x +
                                      M2 * sys->positions[guest].x) / Mtot;
@@ -271,10 +339,18 @@ void bh_collision_step(ParticleSystem *sys,
                                      M2 * sys->positions[guest].z) / Mtot;
 
                                 sys->masses[host]  = Mtot;
-                                /* guest BH marked for removal */
-                                sys->masses[guest] = 0.0f;
+                                sys->masses[guest] = 0.0;   /* guest BH removed */
+
+                                /* We do not try to unlink guest from its own
+                                 * cell list here (it may live in a different cell).
+                                 * It will be skipped later because mass=0 and
+                                 * removed by compaction at the end.
+                                 */
                             }
                         }
+
+                        prev = curr;
+                        p    = next_p;
                     }
                 }
             }

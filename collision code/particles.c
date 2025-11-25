@@ -8,7 +8,7 @@
 #include "particles.h"
 #include "random.h"
 
-void initialize_plummer_positions(Vector3 *positions, int N, float a, Vector3 center) {
+void initialize_plummer_positions(Vector3 *positions, int N, double a, Vector3 center) {
     #pragma omp parallel
     {
         unsigned int seed = time(NULL) + omp_get_thread_num();
@@ -24,7 +24,7 @@ void initialize_plummer_positions(Vector3 *positions, int N, float a, Vector3 ce
     }
 }
 
-void initialize_velocities(Vector3 *velocities, int N, float sigma) {
+void initialize_velocities(Vector3 *velocities, int N, double sigma) {
     #pragma omp parallel
     {
         unsigned int seed = time(NULL) + omp_get_thread_num() * 1000;
@@ -39,10 +39,10 @@ void initialize_velocities(Vector3 *velocities, int N, float sigma) {
 
 void remove_bulk_motion(ParticleSystem *sys) {
     // Use separate scalar variables instead of Vector3
-    float momentum_x = 0.0f;
-    float momentum_y = 0.0f;
-    float momentum_z = 0.0f;
-    float total_mass = 0.0f;
+    double momentum_x = 0.0;
+    double momentum_y = 0.0;
+    double momentum_z = 0.0;
+    double total_mass = 0.0;
     
     // OpenMP can reduce these scalars just fine
     #pragma omp parallel for reduction(+:momentum_x, momentum_y, momentum_z, total_mass)
@@ -73,10 +73,10 @@ void remove_bulk_motion(ParticleSystem *sys) {
 
 void center_in_box(ParticleSystem *sys, Vector3 box_center) {
     // Use separate scalar variables instead of Vector3
-    float pos_cm_x = 0.0f;
-    float pos_cm_y = 0.0f;
-    float pos_cm_z = 0.0f;
-    float total_mass = 0.0f;
+    double pos_cm_x = 0.0;
+    double pos_cm_y = 0.0;
+    double pos_cm_z = 0.0;
+    double total_mass = 0.0;
     
     // Calculate center of mass
     #pragma omp parallel for reduction(+:pos_cm_x, pos_cm_y, pos_cm_z, total_mass)
@@ -105,9 +105,9 @@ void center_in_box(ParticleSystem *sys, Vector3 box_center) {
         sys->positions[i].z += shift.z;
         
         // Apply periodic boundaries
-        sys->positions[i].x = fmodf(sys->positions[i].x + L, L);
-        sys->positions[i].y = fmodf(sys->positions[i].y + L, L);
-        sys->positions[i].z = fmodf(sys->positions[i].z + L, L);
+        sys->positions[i].x = fmod(sys->positions[i].x + L, L);
+        sys->positions[i].y = fmod(sys->positions[i].y + L, L);
+        sys->positions[i].z = fmod(sys->positions[i].z + L, L);
     }
 }
 
@@ -116,10 +116,10 @@ ParticleSystem* initialize_particle_system() {
     sys->N = N_TOTAL;
     sys->positions = (Vector3*)malloc(N_TOTAL * sizeof(Vector3));
     sys->velocities = (Vector3*)malloc(N_TOTAL * sizeof(Vector3));
-    sys->masses = (float*)malloc(N_TOTAL * sizeof(float));
+    sys->masses = (double*)malloc(N_TOTAL * sizeof(double));
     sys->types = (int*)malloc(N_TOTAL * sizeof(int));
     
-    Vector3 center = {L/2.0f, L/2.0f, L/2.0f};
+    Vector3 center = {L/2.0, L/2.0, L/2.0};
     
     double t_start, t_end;
     
@@ -141,9 +141,9 @@ ParticleSystem* initialize_particle_system() {
     
     // Masses and types
     t_start = omp_get_wtime();
-    float m_star = (F_STARS * M_TOTAL) / N_STARS;
-    float m_dm = (F_DM * M_TOTAL) / N_DM;
-    float m_bh = (F_BH * M_TOTAL) / N_BH;
+    double m_star = (F_STARS * M_TOTAL) / N_STARS;
+    double m_dm = (F_DM * M_TOTAL) / N_DM;
+    double m_bh = (F_BH * M_TOTAL) / N_BH;
     
     #pragma omp parallel for
     for (int i = 0; i < N_STARS; i++) {
