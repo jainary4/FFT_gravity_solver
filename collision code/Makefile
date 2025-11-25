@@ -2,20 +2,17 @@ CC      = icc
 CFLAGS  = -O3 -march=native -fp-model precise -std=c11 -qopenmp -Wall
 LDFLAGS = -qopenmp -lm
 
-# Adjust these to your actual filenames if needed
-SRCS = \
-    bh_collision_example.c \
-    bh_collision.c
+SRCS_TEST = \
+    bh_collision_tests.c \
+    bh_collision.c \
+    particles.c \
+    mesh.c \
+    random.c
 
-OBJS = $(SRCS:.c=.o)
+OBJS_TEST = $(SRCS_TEST:.c=.o)
 
-all: bh_test
-
-bh_test: $(OBJS)
+bh_tests: $(OBJS_TEST)
 	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
 
-%.o: %.c
-	$(CC) $(CFLAGS) -c $< -o $@
-
 clean:
-	rm -f *.o bh_test
+	rm -f *.o bh_tests
