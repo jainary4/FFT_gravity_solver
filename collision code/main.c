@@ -29,17 +29,10 @@ int main()
     printf("  Grid: %d³\n", pm->N);
     printf("  Cell size: %.3f kpc\n", pm->cell_size);
 
-    printf("\nRunning CIC mass assignment (padded)...\n");
-
-    // Allocate padded density array and assign masses into it
-    int Np = NMESH_PADDED;
-    double ***rho_pad = allocate_3d_array(Np);
-    int offset = 0; // place original N^3 block at corner; use (Np - NMESH)/2 to center
-    assign_mass_cic_padded(rho_pad, Np, sys, pm->N, pm->cell_size, offset);
+    printf("\nRunning CIC mass assignment...\n");
+    assign_mass_cic(pm, sys);
 
     printf("CIC complete.\n");
-
-    
 
     /* Print black hole positions (use helper added in particles.c/h) */
     Vector3 *bh_pos = get_blackhole_positions(sys);
@@ -50,17 +43,14 @@ int main()
                bh_pos[b].x, bh_pos[b].y, bh_pos[b].z);
     }
 
-    // Optional: print total mass on the padded grid (sanity check)
+    // Optional: print total mass on the grid
     double total_mass = 0.0;
-    double h3 = (double)pm->cell_size * pm->cell_size * pm->cell_size;
-    for (int i = 0; i < Np; i++)
-        for (int j = 0; j < Np; j++)
-            for (int k = 0; k < Np; k++)
-                total_mass += rho_pad[i][j][k] * h3;
+    for (int i = 0; i < pm->N; i++)
+        for (int j = 0; j < pm->N; j++)
+            for (int k = 0; k < pm->N; k++)
+                total_mass += pm->rho[i][j][k]*(pm->cell_size * pm->cell_size * pm->cell_size);
 
-    printf("Total mass in padded grid = %.6f (should be ~ 1.0)\n", total_mass);
-
-    free_3d_array(rho_pad, Np);
+    printf("Total mass in grid = %.6f (should be ≈ 1.0)\n", total_mass);
 
     destroy_particle_mesh(pm);
     destroy_particle_system(sys);

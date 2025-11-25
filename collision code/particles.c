@@ -14,7 +14,7 @@ void initialize_plummer_positions(Vector3 *positions, int N, double a, Vector3 c
         unsigned int seed = time(NULL) + omp_get_thread_num();
         #pragma omp for
         for (int i = 0; i < N; i++) {
-            double r = sample_plummer_radius(a);
+            float r = sample_plummer_radius(a);
             Vector3 offset = random_point_on_sphere(r);
             
             positions[i].x = center.x + offset.x;
@@ -39,10 +39,10 @@ void initialize_velocities(Vector3 *velocities, int N, double sigma) {
 
 void remove_bulk_motion(ParticleSystem *sys) {
     // Use separate scalar variables instead of Vector3
-    float momentum_x = 0.0f;
-    float momentum_y = 0.0f;
-    float momentum_z = 0.0f;
-    float total_mass = 0.0f;
+    double momentum_x = 0.0;
+    double momentum_y = 0.0;
+    double momentum_z = 0.0;
+    double total_mass = 0.0;
     
     // OpenMP can reduce these scalars just fine
     #pragma omp parallel for reduction(+:momentum_x, momentum_y, momentum_z, total_mass)
@@ -73,10 +73,10 @@ void remove_bulk_motion(ParticleSystem *sys) {
 
 void center_in_box(ParticleSystem *sys, Vector3 box_center) {
     // Use separate scalar variables instead of Vector3
-    double pos_cm_x = 0.0f;
-    double pos_cm_y = 0.0f;
-    double pos_cm_z = 0.0f;
-    double total_mass = 0.0f;
+    double pos_cm_x = 0.0;
+    double pos_cm_y = 0.0;
+    double pos_cm_z = 0.0;
+    double total_mass = 0.0;
     
     // Calculate center of mass
     #pragma omp parallel for reduction(+:pos_cm_x, pos_cm_y, pos_cm_z, total_mass)
@@ -105,9 +105,9 @@ void center_in_box(ParticleSystem *sys, Vector3 box_center) {
         sys->positions[i].z += shift.z;
         
         // Apply periodic boundaries
-        sys->positions[i].x = fmodf(sys->positions[i].x + L, L);
-        sys->positions[i].y = fmodf(sys->positions[i].y + L, L);
-        sys->positions[i].z = fmodf(sys->positions[i].z + L, L);
+        sys->positions[i].x = fmod(sys->positions[i].x + L, L);
+        sys->positions[i].y = fmod(sys->positions[i].y + L, L);
+        sys->positions[i].z = fmod(sys->positions[i].z + L, L);
     }
 }
 
@@ -119,7 +119,7 @@ ParticleSystem* initialize_particle_system() {
     sys->masses = (double*)malloc(N_TOTAL * sizeof(double));
     sys->types = (int*)malloc(N_TOTAL * sizeof(int));
     
-    Vector3 center = {L/2.0f, L/2.0f, L/2.0f};
+    Vector3 center = {L/2.0, L/2.0, L/2.0};
     
     double t_start, t_end;
     
