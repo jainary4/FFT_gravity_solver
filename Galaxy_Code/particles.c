@@ -116,6 +116,7 @@ ParticleSystem* initialize_particle_system() {
     sys->N = N_TOTAL;
     sys->positions = (Vector3*)malloc(N_TOTAL * sizeof(Vector3));
     sys->velocities = (Vector3*)malloc(N_TOTAL * sizeof(Vector3));
+    sys->accelerations = (Vector3*)malloc(N_TOTAL * sizeof(Vector3));
     sys->masses = (double*)malloc(N_TOTAL * sizeof(double));
     sys->types = (int*)malloc(N_TOTAL * sizeof(int));
     
@@ -176,6 +177,7 @@ void destroy_particle_system(ParticleSystem *sys) {
     if (!sys) return;
     free(sys->positions);
     free(sys->velocities);
+    free(sys->accelerations);
     free(sys->masses);
     free(sys->types);
     free(sys);
