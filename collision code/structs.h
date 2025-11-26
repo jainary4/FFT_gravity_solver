@@ -9,6 +9,7 @@ typedef struct {
 typedef struct {
     Vector3 *positions;
     Vector3 *velocities;
+    Vector3 *accelerations;
     double *masses;
     int   *types; 
     int N;
@@ -20,5 +21,7 @@ typedef struct {
     double cell_size;
     double box_size;
 } ParticleMesh;
+
+
 
 #endif

@@ -416,7 +416,8 @@ static int test_plummer_with_mesh_and_bh(void)
     printf("  (For boundary testing, set NMESH=64 in constants.h for this run)\n");
 
     /* Mass on grid before collisions */
-    assign_mass_cic(pm, sys);
+    assign_mass_cic_padded(pm->rho, pm->N, sys, pm->N, pm->cell_size, 0);
+
     double grid_mass_before = 0.0;
     for (int i = 0; i < pm->N; ++i)
         for (int j = 0; j < pm->N; ++j)
@@ -434,7 +435,8 @@ static int test_plummer_with_mesh_and_bh(void)
     bh_collision_step(sys, bh_indices, &n_bh);
 
     /* Mass on grid after collisions */
-    assign_mass_cic(pm, sys);
+    assign_mass_cic_padded(pm->rho, pm->N, sys, pm->N, pm->cell_size, 0);
+
     double grid_mass_after = 0.0;
     for (int i = 0; i < pm->N; ++i)
         for (int j = 0; j < pm->N; ++j)
