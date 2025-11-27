@@ -87,27 +87,6 @@ Parallelized modules:
 - Collision physics  
 - Grid operations  
 
----
-
-# 📁 Project Structure
-
-FFT_gravity_solver/
-│
-├── constants.h # Simulation parameters
-├── structs.h # Data structures
-├── particles.c/h # Initialization & Plummer sampling
-├── mesh.c/h # CIC mass assignment & force interpolation
-├── poisson.c/h # RHS construction (4πGρ)
-├── fft_solver.c/h # FFTW-based Poisson solver
-├── force.c/h # Finite-difference gradient
-├── integrator.c/h # Symplectic integrators
-├── bh_collision.c/h # BH collision & merger logic
-├── random.c/h # RNG utilities
-├── main.c # Driver: timestep loop (in progress)
-└── Makefile
-
-
----
 
 # 🧪 Validation Summary
 
