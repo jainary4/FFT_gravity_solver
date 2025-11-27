@@ -71,6 +71,11 @@ bh_collision_tests: $(BH_TESTS_OBJS)
 integrator_tests: $(INTEGRATOR_TEST_OBJS)
 	$(CC) $(CFLAGS) -o $@ $^ $(LDLIBS)
 
+# FFT tests (uses FFTW)
+fft_tests: fft_tests.o fft_solver.o
+	$(CC) $(CFLAGS) -o $@ $^ $(LDLIBS) $(FFTW_LIBS)
+
+
 # Full simulation (uses FFTW)
 main: $(MAIN_OBJS)
 	$(CC) $(CFLAGS) -o $@ $^ $(LDLIBS) $(FFTW_LIBS)
