@@ -1,0 +1,27 @@
+Running with OpenMP, max threads = 12
+TEST: harmonic oscillator, leapfrog
+  Relative energy oscillation: 2.500e-05
+  PASS (leapfrog energy bounded)
+
+TEST: harmonic oscillator, symplectic4
+  Debug: dt = 1.000e-02, n_steps = 62800, E0 = 5.000000e-01
+  E_min = 4.999924e-01, E_max = 5.000000e-01
+  Relative energy oscillation (sym4): 1.515e-05
+  Relative energy oscillation (leapfrog): 2.500e-05
+  Ratio sym4 / leapfrog: 0.606
+  PASS (4th-order energy conservation as good or better than leapfrog)
+
+TEST: Kepler orbit (central mass), symplectic4
+  Relative E oscillation: 9.182e-10
+  Relative L oscillation: 2.328e-13
+  PASS (Kepler invariants well conserved)
+
+TEST: time-reversibility of symplectic4
+  |dx| = 4.441e-15, |dv| = 1.443e-14
+  PASS (time reversibility good)
+
+TEST: edge cases
+  Calling integrators on empty system...
+  (no crash == PASS)
+  dt = 0 => positions/vel unchanged? dx=0.000e+00, dv=0.000e+00
+  Position after crossing boundary: x=8.500000 (should be in [0,L))

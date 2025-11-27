@@ -1,0 +1,22 @@
+Running FFT tests with OpenMP, max threads = 12
+TEST: FFT Poisson solver - single cosine mode
+  k2 (mode 1,0,0) = 1.522409e-01
+  L2 relative error = 2.600e-08
+  max abs error     = 2.524e-08
+  PASS (FFT solver reproduces single-mode solution)
+
+TEST: FFT Poisson solver - superposition of two modes
+  L2 relative error = 6.532e-08
+  max abs error     = 1.004e-07
+  PASS (FFT solver reproduces two-mode superposition)
+
+TEST: FFT Poisson solver - full 3D mode
+  k2 (mode 1,1,2) = 8.902683e-01
+  L2 relative error = 6.388e-08
+  max abs error     = 1.435e-07
+  PASS (FFT solver reproduces 3D mode)
+
+TEST: FFT Poisson solver - DC (constant) RHS
+  L2 relative error (vs zero) = 0.000e+00
+  max abs potential           = 0.000e+00
+  PASS (FFT solver correctly handles DC mode by zeroing potential)
