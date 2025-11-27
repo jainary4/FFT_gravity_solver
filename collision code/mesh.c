@@ -43,11 +43,9 @@ void destroy_particle_mesh(ParticleMesh *pm) {
     free(pm);
 }
 
-// (periodic assign_mass_cic removed - simulation uses padded isolated solver)
-
-// Assign masses into a zero-padded grid without periodic wrapping.
-// The original N x N x N block is written starting at index 'offset' in each dimension
-// inside the padded Np x Np x Np array.
+// FIX 2: Updated mass assignment to support isolated boundaries (no wrapping).
+// Particles are allowed to enter the padded region. If they leave the padded
+// region entirely, they are ignored (mass lost).
 void assign_mass_cic_padded(double ***rho_pad, int Np, ParticleSystem *sys, int N, double h, int offset) {
     double t_start = omp_get_wtime();
 
@@ -63,7 +61,7 @@ void assign_mass_cic_padded(double ***rho_pad, int Np, ParticleSystem *sys, int 
         }
     }
 
-    // mass assignment into the padded array: write into indices offset..offset+N-1
+    // mass assignment into the padded array
     #pragma omp parallel for
     for (int p = 0; p < sys->N; p++) {
         double x_grid = sys->positions[p].x / h;
@@ -90,38 +88,42 @@ void assign_mass_cic_padded(double ***rho_pad, int Np, ParticleSystem *sys, int 
         for (int di = 0; di <= 1; di++) {
             for (int dj = 0; dj <= 1; dj++) {
                 for (int dk = 0; dk <= 1; dk++) {
+                    // Physical grid index
                     int i_orig = i0 + di;
                     int j_orig = j0 + dj;
                     int k_orig = k0 + dk;
                     
-                    // Apply periodic wrapping to the original N grid
-                    i_orig = (i_orig % N + N) % N;
-                    j_orig = (j_orig % N + N) % N;
-                    k_orig = (k_orig % N + N) % N;
-                    
-                    // Map to padded array
+                    // Map to padded array indices using offset
                     int i = offset + i_orig;
                     int j = offset + j_orig;
                     int k = offset + k_orig;
                     
-                    double wx = (di == 0) ? wx0 : wx1;
-                    double wy = (dj == 0) ? wy0 : wy1;
-                    double wz = (dk == 0) ? wz0 : wz1;
-                    double weight = wx * wy * wz;
+                    // FIX: Check bounds of the PADDED array. 
+                    // Do not wrap. If outside, skip.
+                    if (i >= 0 && i < Np && 
+                        j >= 0 && j < Np && 
+                        k >= 0 && k < Np) {
+                        
+                        double wx = (di == 0) ? wx0 : wx1;
+                        double wy = (dj == 0) ? wy0 : wy1;
+                        double wz = (dk == 0) ? wz0 : wz1;
+                        double weight = wx * wy * wz;
 
-                    #pragma omp atomic
-                    rho_pad[i][j][k] += density * weight;
+                        #pragma omp atomic
+                        rho_pad[i][j][k] += density * weight;
+                    }
                 }
             }
         }
     }
 
     double t_end = omp_get_wtime();
-    printf("CIC padded mass assignment: %.2f seconds\n", t_end - t_start);
+    // printf("CIC padded mass assignment: %.2f seconds\n", t_end - t_start);
 }
 
-// CIC Gather: Interpolate grid forces to particles and compute accelerations
-// F = force from grid, a = F/m = acceleration of particle
+// FIX 2: Updated force gather to support isolated boundaries.
+// Particles drift into the padded region and interpolate forces from there.
+// If a particle leaves the padded box completely, it feels zero force.
 void gather_forces_to_particles(
     double ***force_x, double ***force_y, double ***force_z,
     int Np, ParticleSystem *sys, int N, double h, int offset
@@ -151,21 +153,10 @@ void gather_forces_to_particles(
         int j0 = (int)floorf(y_grid);
         int k0 = (int)floorf(z_grid);
 
-        // Clamp to physical grid bounds [0, N-1]
-        // (Particles should be within [0, L], but allow slight overshoot due to numerics)
-        i0 = (i0 < 0) ? 0 : (i0 >= N - 1) ? N - 1 : i0;
-        j0 = (j0 < 0) ? 0 : (j0 >= N - 1) ? N - 1 : j0;
-        k0 = (k0 < 0) ? 0 : (k0 >= N - 1) ? N - 1 : k0;
-
         // 4. Compute fractional offsets within cell
         double dx = x_grid - (double)i0;
         double dy = y_grid - (double)j0;
         double dz = z_grid - (double)k0;
-
-        // Clamp fractional parts to [0, 1) in case of rounding errors
-        dx = (dx < 0.0) ? 0.0 : (dx >= 1.0) ? 0.999999 : dx;
-        dy = (dy < 0.0) ? 0.0 : (dy >= 1.0) ? 0.999999 : dy;
-        dz = (dz < 0.0) ? 0.0 : (dz >= 1.0) ? 0.999999 : dz;
 
         // 5. Compute weights for 8 corners
         double wx[2], wy[2], wz[2];
@@ -175,29 +166,42 @@ void gather_forces_to_particles(
 
         // 6. Interpolate forces from 8 corners
         double Fx = 0.0, Fy = 0.0, Fz = 0.0;
+        
+        // FIX: Verify the particle is inside the interpolation region of the padded grid.
+        // We need (i, j, k) and (i+1, j+1, k+1) to be within [0, Np-1].
+        // So the base indices (after offset) must be < Np - 1.
+        
+        int i_base = offset + i0;
+        int j_base = offset + j0;
+        int k_base = offset + k0;
 
-        for (int di = 0; di <= 1; di++) {
-            for (int dj = 0; dj <= 1; dj++) {
-                for (int dk = 0; dk <= 1; dk++) {
-                    // Grid index in physical domain
-                    int i_phys = i0 + di;
-                    int j_phys = j0 + dj;
-                    int k_phys = k0 + dk;
+        if (i_base >= 0 && i_base < Np - 1 &&
+            j_base >= 0 && j_base < Np - 1 &&
+            k_base >= 0 && k_base < Np - 1) 
+        {
+            for (int di = 0; di <= 1; di++) {
+                for (int dj = 0; dj <= 1; dj++) {
+                    for (int dk = 0; dk <= 1; dk++) {
+                        // Map to padded array indices
+                        int i = i_base + di;
+                        int j = j_base + dj;
+                        int k = k_base + dk;
 
-                    // Map to padded array indices
-                    int i = offset + i_phys;
-                    int j = offset + j_phys;
-                    int k = offset + k_phys;
+                        // Compute weight: product of 1D weights
+                        double weight = wx[di] * wy[dj] * wz[dk];
 
-                    // Compute weight: product of 1D weights
-                    double weight = wx[di] * wy[dj] * wz[dk];
-
-                    // Accumulate force contributions
-                    Fx += weight * force_x[i][j][k];
-                    Fy += weight * force_y[i][j][k];
-                    Fz += weight * force_z[i][j][k];
+                        // Accumulate force contributions
+                        Fx += weight * force_x[i][j][k];
+                        Fy += weight * force_y[i][j][k];
+                        Fz += weight * force_z[i][j][k];
+                    }
                 }
             }
+        } else {
+            // Particle is outside the padded mesh: assume zero force (escaped)
+            Fx = 0.0;
+            Fy = 0.0;
+            Fz = 0.0;
         }
 
         // 7. Compute acceleration: a = F / m
@@ -215,5 +219,5 @@ void gather_forces_to_particles(
     }
 
     double t_end = omp_get_wtime();
-    printf("CIC gather forces to particles: %.2f seconds\n", t_end - t_start);
+    // printf("CIC gather forces to particles: %.2f seconds\n", t_end - t_start);
 }

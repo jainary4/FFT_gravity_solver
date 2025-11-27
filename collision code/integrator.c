@@ -8,15 +8,10 @@
 #include <omp.h>
 #endif
 
-/* Map x to [0, L) with periodic boundaries. */
-static inline double wrap_periodic(double x)
-{
-    if (!isfinite(x)) return x;   // if NaN/Inf, leave it (we can detect later)
-
-    x = fmod(x, L);
-    if (x < 0.0) x += L;
-    return x;
-}
+/* * FIX 1: Removed periodic wrapping helper. 
+ * In an isolated simulation (zero-padding), particles should be allowed 
+ * to move outside [0, L).
+ */
 
 void leapfrog_step(ParticleSystem *sys,
                    double          dt,
@@ -41,6 +36,7 @@ void leapfrog_step(ParticleSystem *sys,
     }
 
     /* --------- drift: x^{n+1} = x^n + dt v^{n+1/2} --------- */
+    /* FIX 1: Removed wrap_periodic calls to allow free motion */
     #ifdef _OPENMP
     #pragma omp parallel for schedule(static)
     #endif
@@ -48,11 +44,6 @@ void leapfrog_step(ParticleSystem *sys,
         sys->positions[i].x += dt * sys->velocities[i].x;
         sys->positions[i].y += dt * sys->velocities[i].y;
         sys->positions[i].z += dt * sys->velocities[i].z;
-
-        /* periodic BCs */
-        sys->positions[i].x = wrap_periodic(sys->positions[i].x);
-        sys->positions[i].y = wrap_periodic(sys->positions[i].y);
-        sys->positions[i].z = wrap_periodic(sys->positions[i].z);
     }
 
     /* --------- recompute accelerations at new positions --------- */
