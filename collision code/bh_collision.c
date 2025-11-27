@@ -1,14 +1,29 @@
+#include <stdio.h>
 #include <stdlib.h>
 #include <math.h>
+
+#ifdef _OPENMP
 #include <omp.h>
+#endif
 
 #include "constants.h"
 #include "structs.h"
 #include "bh_collision.h"
 
-/* ----------------- small helpers ----------------- */
+/* ------------------------------------------------------------
+ * Periodic helpers
+ * ------------------------------------------------------------ */
 
-/* Periodic minimum-image separation in box [0, L). */
+/* Wrap coordinate into [0, L) */
+static inline double wrap_box(double x)
+{
+    x = fmod(x, L);
+    if (x < 0.0) x += L;
+    if (x >= L)  x -= L;
+    return x;
+}
+
+/* Minimum-image separation in one dimension */
 static inline double periodic_delta(double dx)
 {
     if (dx >  0.5 * L) dx -= L;
@@ -16,351 +31,264 @@ static inline double periodic_delta(double dx)
     return dx;
 }
 
-/* Map (x,y,z) to cell index on NMESH^3 grid with box size L. */
-static int cell_index(double x, double y, double z,
-                      int *ix, int *iy, int *iz)
+/* Swap particle j into slot i (and keep all arrays consistent) */
+static void swap_particle(ParticleSystem *sys, int i, int j)
 {
-    const int    N = NMESH;
-    const double h = L / (double)NMESH;
+    if (i == j) return;
 
-    double xg = x / h;
-    double yg = y / h;
-    double zg = z / h;
+    Vector3 tmp_pos = sys->positions[i];
+    Vector3 tmp_vel = sys->velocities[i];
+    Vector3 tmp_acc = sys->accelerations[i];
+    double tmp_m = sys->masses[i];
+    int tmp_t    = sys->types[i];
 
-    int i = (int)floor(xg);
-    int j = (int)floor(yg);
-    int k = (int)floor(zg);
+    sys->positions[i]     = sys->positions[j];
+    sys->velocities[i]    = sys->velocities[j];
+    sys->accelerations[i] = sys->accelerations[j];
+    sys->masses[i]        = sys->masses[j];
+    sys->types[i]         = sys->types[j];
 
-    /* periodic wrap to [0, N-1] */
-    i = (i % N + N) % N;
-    j = (j % N + N) % N;
-    k = (k % N + N) % N;
-
-    if (ix) *ix = i;
-    if (iy) *iy = j;
-    if (iz) *iz = k;
-
-    return i + N * (j + N * k);
+    sys->positions[j]     = tmp_pos;
+    sys->velocities[j]    = tmp_vel;
+    sys->accelerations[j] = tmp_acc;
+    sys->masses[j]        = tmp_m;
+    sys->types[j]         = tmp_t;
 }
 
-/* Squared distance with periodic BCs. */
-static double distance2_periodic(const Vector3 *a, const Vector3 *b)
+/* After we swap in the last particle, if that last one was a BH,
+ * fix its index in the bh_indices array.
+ */
+static void update_bh_indices_after_swap(int *bh_indices,
+                                         int n_bh,
+                                         int old_index,
+                                         int new_index)
 {
-    double dx = periodic_delta(b->x - a->x);
-    double dy = periodic_delta(b->y - a->y);
-    double dz = periodic_delta(b->z - a->z);
-    return dx*dx + dy*dy + dz*dz;
-}
-
-/* --------------------------------------------------
- * Compact the particle system by removing all particles
- * with mass <= 0.0. Removal is done by swapping with the
- * last active particle and decrementing sys->N.
- *
- * The BH index list bh_indices[0..*n_bh-1] is kept consistent:
- *   - if a removed particle is a BH, it is removed from the list;
- *   - if the last particle is a BH and gets swapped into a new slot,
- *     its index in the list is updated.
- *
- * Complexity:
- *   - O(sys->N) per call, plus O(N_BH) per removed BH.
- *   - N_BH is tiny (~10), so effectively O(N).
- * -------------------------------------------------- */
-static void compact_particle_system(ParticleSystem *sys,
-                                    int           *bh_indices,
-                                    int           *n_bh)
-{
-    int i = 0;
-    while (i < sys->N) {
-        if (sys->masses[i] <= 0.0) {
-            int last = sys->N - 1;
-            int type_i    = sys->types[i];
-            int type_last = sys->types[last];
-
-            /* If we are removing a BH, drop it from bh_indices. */
-            if (type_i == TYPE_BH && bh_indices && n_bh) {
-                for (int k = 0; k < *n_bh; ++k) {
-                    if (bh_indices[k] == i) {
-                        bh_indices[k] = bh_indices[*n_bh - 1];
-                        (*n_bh)--;
-                        break;
-                    }
-                }
-            }
-
-            if (i != last) {
-                /* If the last particle is a BH, update its index in bh_indices. */
-                if (type_last == TYPE_BH && bh_indices && n_bh) {
-                    for (int k = 0; k < *n_bh; ++k) {
-                        if (bh_indices[k] == last) {
-                            bh_indices[k] = i;
-                            break;
-                        }
-                    }
-                }
-
-                /* Swap particle data: positions, velocities, mass, type. */
-                Vector3 tmp_pos = sys->positions[i];
-                sys->positions[i] = sys->positions[last];
-                sys->positions[last] = tmp_pos;
-
-                Vector3 tmp_vel = sys->velocities[i];
-                sys->velocities[i] = sys->velocities[last];
-                sys->velocities[last] = tmp_vel;
-
-                double tmp_m = sys->masses[i];
-                sys->masses[i] = sys->masses[last];
-                sys->masses[last] = tmp_m;
-
-                sys->types[i]      = sys->types[last];
-            }
-
-            /* One fewer active particle. */
-            sys->N--;
-            /* Do NOT increment i: process the swapped-in particle next. */
-        } else {
-            ++i;
+    for (int b = 0; b < n_bh; ++b) {
+        if (bh_indices[b] == old_index) {
+            bh_indices[b] = new_index;
+            break;
         }
     }
 }
 
-/* --------------------------------------------------
- * Main BH collision / merge step.
- *
- * Parallelisation strategy:
- *   - Build the cell-linked list (head[cell], next[p]) in parallel
- *     over all particles using OpenMP, with an atomic capture on
- *     head[cell] to avoid races.
- *   - The BH neighbour search and compaction are kept serial, because
- *     the number of BHs is tiny (~10) and these operations involve
- *     complex shared updates.
- * -------------------------------------------------- */
+/* ------------------------------------------------------------
+ * Main BH collision step
+ * ------------------------------------------------------------ */
 void bh_collision_step(ParticleSystem *sys,
-                       int           *bh_indices,
-                       int           *n_bh)
+                       int *bh_indices,
+                       int *n_bh)
 {
-    if (!sys || !bh_indices || !n_bh) return;
-    if (*n_bh <= 0 || sys->N <= 0)     return;
-
-    const int    N_cells       = NMESH * NMESH * NMESH;
-    const double h             = L / (double)NMESH;
-    const double search_radius = (BH_STAR_COLLISION_RADIUS > BH_BH_COLLISION_RADIUS)
-                                ? BH_STAR_COLLISION_RADIUS
-                                : BH_BH_COLLISION_RADIUS;
-    const double r2_star = BH_STAR_COLLISION_RADIUS * BH_STAR_COLLISION_RADIUS;
-    const double r2_bh   = BH_BH_COLLISION_RADIUS   * BH_BH_COLLISION_RADIUS;
-
-    /* --------- Build cell-linked list: head[cell], next[particle] --------- */
-
-    int *head = (int*)malloc((size_t)N_cells * sizeof(int));
-    int *next = (int*)malloc((size_t)sys->N   * sizeof(int));
-
-    if (!head || !next) {
-        free(head);
-        free(next);
+    if (!sys || !bh_indices || !n_bh || *n_bh <= 0) {
         return;
     }
 
-    for (int c = 0; c < N_cells; ++c) {
-        head[c] = -1;
-    }
+    int  N   = sys->N;
+    int  nb  = *n_bh;
+    int  n_coll = 0;
 
-    #pragma omp parallel for
-    for (int p = 0; p < sys->N; ++p) {
-        next[p] = -1;
-    }
+    const double R_star2 = BH_STAR_COLLISION_RADIUS * BH_STAR_COLLISION_RADIUS;
+    const double R_bh2   = BH_BH_COLLISION_RADIUS   * BH_BH_COLLISION_RADIUS;
 
-    /* We only put stars and BH into the cell list (DM is ignored). */
-    #pragma omp parallel for
-    for (int p = 0; p < sys->N; ++p) {
-        if (sys->masses[p] <= 0.0) {
-            next[p] = -1;
-            continue;
-        }
+    if (N <= 0 || nb <= 0) return;
 
-        int t = sys->types[p];
-        if (t == TYPE_DM) {
-            next[p] = -1;
-            continue;
-        }
+    /* --------------------------------------------------------
+     * 1) BH¨Cstar accretion: swallow TYPE_STAR within R_star
+     * -------------------------------------------------------- */
+    for (int b = 0; b < nb; ++b) {
+        int ibh = bh_indices[b];
+        if (ibh < 0 || ibh >= sys->N) continue;
 
-        int ix, iy, iz;
-        int cell = cell_index(sys->positions[p].x,
-                              sys->positions[p].y,
-                              sys->positions[p].z,
-                              &ix, &iy, &iz);
+        double xbh = sys->positions[ibh].x;
+        double ybh = sys->positions[ibh].y;
+        double zbh = sys->positions[ibh].z;
 
-        /* Atomic push-front into linked list for this cell. */
-        #pragma omp atomic capture
-        {
-            next[p]  = head[cell];
-            head[cell] = p;
-        }
-    }
+        int i = 0;
+        while (i < sys->N) {
+            /* Skip BHs themselves */
+            if (sys->types[i] == 2) {
+                ++i;
+                continue;
+            }
 
-    /* --------- For each BH, search neighbours within search_radius --------- */
+            /* Only swallow stars (you can change this to include DM if desired) */
+            if (sys->types[i] != 0) {
+                ++i;
+                continue;
+            }
 
-    for (int ibh_list = 0; ibh_list < *n_bh; ++ibh_list) {
-        int i_bh = bh_indices[ibh_list];
+            double xi = sys->positions[i].x;
+            double yi = sys->positions[i].y;
+            double zi = sys->positions[i].z;
 
-        if (i_bh < 0 || i_bh >= sys->N) continue;
-        if (sys->masses[i_bh] <= 0.0)  continue;
-        if (sys->types[i_bh] != TYPE_BH) continue;
+            double dx = periodic_delta(xi - xbh);
+            double dy = periodic_delta(yi - ybh);
+            double dz = periodic_delta(zi - zbh);
+            double r2 = dx*dx + dy*dy + dz*dz;
 
-        Vector3 pos_bh = sys->positions[i_bh];
+            if (r2 < R_star2 && n_coll < BH_MAX_COLLISIONS_PER_STEP) {
+                /* Swallow star i into BH ibh */
+                double m_bh = sys->masses[ibh];
+                double m_i  = sys->masses[i];
 
-        int ixBH, iyBH, izBH;
-        (void)cell_index(pos_bh.x, pos_bh.y, pos_bh.z, &ixBH, &iyBH, &izBH);
+                if (m_i > 0.0) {
+                    /* Momentum-conserving velocity update */
+                    double vx_bh = sys->velocities[ibh].x;
+                    double vy_bh = sys->velocities[ibh].y;
+                    double vz_bh = sys->velocities[ibh].z;
 
-        int nCellR = (int)ceil(search_radius / h);
+                    double vx_i  = sys->velocities[i].x;
+                    double vy_i  = sys->velocities[i].y;
+                    double vz_i  = sys->velocities[i].z;
 
-        for (int ix = ixBH - nCellR; ix <= ixBH + nCellR; ++ix) {
-            if (ix < 0 || ix >= NMESH) continue;
-            for (int iy = iyBH - nCellR; iy <= iyBH + nCellR; ++iy) {
-                if (iy < 0 || iy >= NMESH) continue;
-                for (int iz = izBH - nCellR; iz <= izBH + nCellR; ++iz) {
-                    if (iz < 0 || iz >= NMESH) continue;
-
-                    int cell = ix + NMESH * (iy + NMESH * iz);
-
-                    /* We use a (prev, curr) iteration pattern so we can
-                     * unlink eaten particles from the cell list on the fly,
-                     * without breaking the traversal.
-                     */
-                    int prev = -1;
-                    int p    = head[cell];
-
-                    while (p != -1) {
-                        int curr   = p;
-                        int next_p = next[curr];
-
-                        /* Skip already-removed particles quickly. */
-                        if (sys->masses[curr] <= 0.0) {
-                            /* Unlink curr from list. */
-                            if (prev == -1) head[cell] = next_p;
-                            else            next[prev] = next_p;
-                            p = next_p;
-                            continue;
-                        }
-
-                        if (curr == i_bh) {
-                            prev = curr;
-                            p    = next_p;
-                            continue;
-                        }
-
-                        int t_p = sys->types[curr];
-
-                        if (t_p == TYPE_DM) {
-                            prev = curr;
-                            p    = next_p;
-                            continue;
-                        }
-
-                        double r2 = distance2_periodic(&pos_bh, &sys->positions[curr]);
-
-                        if (t_p == TYPE_STAR) {
-                            /* BH-star collision */
-                            if (r2 <= r2_star) {
-                                double Mbh_old = sys->masses[i_bh];
-                                double Ms      = sys->masses[curr];
-                                double Mtot    = Mbh_old + Ms;
-
-                                Vector3 v_bh = sys->velocities[i_bh];
-                                Vector3 v_s  = sys->velocities[curr];
-
-                                /* Momentum conservation: v_new = (M1 v1 + M2 v2)/Mtot */
-                                sys->velocities[i_bh].x =
-                                    (Mbh_old * v_bh.x + Ms * v_s.x) / Mtot;
-                                sys->velocities[i_bh].y =
-                                    (Mbh_old * v_bh.y + Ms * v_s.y) / Mtot;
-                                sys->velocities[i_bh].z =
-                                    (Mbh_old * v_bh.z + Ms * v_s.z) / Mtot;
-
-                                /* Optional: shift BH position to center of mass. */
-                                sys->positions[i_bh].x =
-                                    (Mbh_old * sys->positions[i_bh].x +
-                                     Ms      * sys->positions[curr].x) / Mtot;
-                                sys->positions[i_bh].y =
-                                    (Mbh_old * sys->positions[i_bh].y +
-                                     Ms      * sys->positions[curr].y) / Mtot;
-                                sys->positions[i_bh].z =
-                                    (Mbh_old * sys->positions[i_bh].z +
-                                     Ms      * sys->positions[curr].z) / Mtot;
-
-                                sys->masses[i_bh] = Mtot;
-
-                                /* Mark star for removal. */
-                                sys->masses[curr] = 0.0;
-
-                                /* Unlink curr from this cell's list. */
-                                if (prev == -1) head[cell] = next_p;
-                                else            next[prev] = next_p;
-
-                                p = next_p;
-                                continue;
-                            }
-                        }
-                        else if (t_p == TYPE_BH) {
-                            /* BH-BH collision: avoid double counting (curr > i_bh). */
-                            if (curr > i_bh && r2 <= r2_bh) {
-                                int host  = i_bh;
-                                int guest = curr;
-
-                                if (sys->masses[curr] > sys->masses[i_bh]) {
-                                    host  = curr;
-                                    guest = i_bh;
-                                }
-
-                                double M1   = sys->masses[host];
-                                double M2   = sys->masses[guest];
-                                double Mtot = M1 + M2;
-
-                                Vector3 v1 = sys->velocities[host];
-                                Vector3 v2 = sys->velocities[guest];
-
-                                /* Momentum conservation */
-                                sys->velocities[host].x =
-                                    (M1 * v1.x + M2 * v2.x) / Mtot;
-                                sys->velocities[host].y =
-                                    (M1 * v1.y + M2 * v2.y) / Mtot;
-                                sys->velocities[host].z =
-                                    (M1 * v1.z + M2 * v2.z) / Mtot;
-
-                                /* Center-of-mass position */
-                                sys->positions[host].x =
-                                    (M1 * sys->positions[host].x +
-                                     M2 * sys->positions[guest].x) / Mtot;
-                                sys->positions[host].y =
-                                    (M1 * sys->positions[host].y +
-                                     M2 * sys->positions[guest].y) / Mtot;
-                                sys->positions[host].z =
-                                    (M1 * sys->positions[host].z +
-                                     M2 * sys->positions[guest].z) / Mtot;
-
-                                sys->masses[host]  = Mtot;
-                                sys->masses[guest] = 0.0;   /* guest BH removed */
-
-                                /* We do not try to unlink guest from its own
-                                 * cell list here (it may live in a different cell).
-                                 * It will be skipped later because mass=0 and
-                                 * removed by compaction at the end.
-                                 */
-                            }
-                        }
-
-                        prev = curr;
-                        p    = next_p;
+                    double Mnew = m_bh + m_i;
+                    if (Mnew > 0.0) {
+                        sys->velocities[ibh].x =
+                            (m_bh * vx_bh + m_i * vx_i) / Mnew;
+                        sys->velocities[ibh].y =
+                            (m_bh * vy_bh + m_i * vy_i) / Mnew;
+                        sys->velocities[ibh].z =
+                            (m_bh * vz_bh + m_i * vz_i) / Mnew;
                     }
+
+                    /* Move BH slightly toward star (mass-weighted average) */
+                    double x_new = wrap_box((m_bh * xbh + m_i * xi) / Mnew);
+                    double y_new = wrap_box((m_bh * ybh + m_i * yi) / Mnew);
+                    double z_new = wrap_box((m_bh * zbh + m_i * zi) / Mnew);
+
+                    sys->positions[ibh].x = x_new;
+                    sys->positions[ibh].y = y_new;
+                    sys->positions[ibh].z = z_new;
+
+                    sys->masses[ibh] = Mnew;
+
+                    /* Remove star i from the system by swapping with last */
+                    int last = sys->N - 1;
+                    if (i != last) {
+                        swap_particle(sys, i, last);
+                        /* If we swapped in a BH from the end, fix its index */
+                        update_bh_indices_after_swap(bh_indices, nb, last, i);
+                    }
+                    sys->N--;
+                    N = sys->N;  /* keep local N consistent */
+
+                    n_coll++;
+
+                    /* After removing particle i, we don't increment i,
+                       because a new particle has been swapped into slot i. */
+                    continue;
                 }
             }
+
+            ++i;
+        } /* end while(i) */
+
+        /* Refresh BH position for next BH (it might have moved) */
+        if (ibh >= 0 && ibh < sys->N) {
+            xbh = sys->positions[ibh].x;
+            ybh = sys->positions[ibh].y;
+            zbh = sys->positions[ibh].z;
         }
     }
 
-    free(head);
-    free(next);
+    /* --------------------------------------------------------
+     * 2) BH¨CBH merging
+     * -------------------------------------------------------- */
+    int b = 0;
+    while (b < nb) {
+        int i1 = bh_indices[b];
+        if (i1 < 0 || i1 >= sys->N) {
+            /* This BH index is invalid; drop it from the list */
+            bh_indices[b] = bh_indices[nb - 1];
+            nb--;
+            continue;
+        }
 
-    /* Now physically remove all particles with mass <= 0.0,
-       keeping bh_indices[] and *n_bh consistent. */
-    compact_particle_system(sys, bh_indices, n_bh);
+        double x1 = sys->positions[i1].x;
+        double y1 = sys->positions[i1].y;
+        double z1 = sys->positions[i1].z;
+
+        int b2 = b + 1;
+        while (b2 < nb) {
+            int i2 = bh_indices[b2];
+            if (i2 < 0 || i2 >= sys->N) {
+                bh_indices[b2] = bh_indices[nb - 1];
+                nb--;
+                continue;
+            }
+
+            double x2 = sys->positions[i2].x;
+            double y2 = sys->positions[i2].y;
+            double z2 = sys->positions[i2].z;
+
+            double dx = periodic_delta(x2 - x1);
+            double dy = periodic_delta(y2 - y1);
+            double dz = periodic_delta(z2 - z1);
+            double r2 = dx*dx + dy*dy + dz*dz;
+
+            if (r2 < R_bh2 && n_coll < BH_MAX_COLLISIONS_PER_STEP) {
+                /* Merge BH at i2 into BH at i1 */
+                double m1 = sys->masses[i1];
+                double m2 = sys->masses[i2];
+                double Mnew = m1 + m2;
+
+                double vx1 = sys->velocities[i1].x;
+                double vy1 = sys->velocities[i1].y;
+                double vz1 = sys->velocities[i1].z;
+
+                double vx2 = sys->velocities[i2].x;
+                double vy2 = sys->velocities[i2].y;
+                double vz2 = sys->velocities[i2].z;
+
+                if (Mnew > 0.0) {
+                    sys->velocities[i1].x =
+                        (m1 * vx1 + m2 * vx2) / Mnew;
+                    sys->velocities[i1].y =
+                        (m1 * vy1 + m2 * vy2) / Mnew;
+                    sys->velocities[i1].z =
+                        (m1 * vz1 + m2 * vz2) / Mnew;
+
+                    double x_new =
+                        wrap_box((m1 * x1 + m2 * x2) / Mnew);
+                    double y_new =
+                        wrap_box((m1 * y1 + m2 * y2) / Mnew);
+                    double z_new =
+                        wrap_box((m1 * z1 + m2 * z2) / Mnew);
+
+                    sys->positions[i1].x = x_new;
+                    sys->positions[i1].y = y_new;
+                    sys->positions[i1].z = z_new;
+
+                    sys->masses[i1] = Mnew;
+                }
+
+                /* Remove BH at i2 from system */
+                int last = sys->N - 1;
+                if (i2 != last) {
+                    swap_particle(sys, i2, last);
+                    update_bh_indices_after_swap(bh_indices, nb, last, i2);
+                }
+                sys->N--;
+                N = sys->N;
+
+                /* Remove BH index entry for this merged BH */
+                bh_indices[b2] = bh_indices[nb - 1];
+                nb--;
+
+                n_coll++;
+
+                /* Do not increment b2; we need to examine the new entry
+                   that was just moved into position b2. */
+                continue;
+            }
+
+            ++b2;
+        } /* end while(b2) */
+
+        ++b;
+    }
+
+    *n_bh = nb;
+
+    /* Optional debug: total collisions this call */
+    /* printf("bh_collision_step: total collisions this step = %d\n", n_coll); */
 }

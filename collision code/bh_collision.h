@@ -2,49 +2,47 @@
 #define BH_COLLISION_H
 
 #include "structs.h"
-#include "constants.h"
-
-/* Match initialise.c:
- *   0 = stars
- *   1 = dark matter
- *   2 = black holes
- */
-#define TYPE_STAR 0
-#define TYPE_DM   1
-#define TYPE_BH   2
-
-/* Fixed collision radii in code units (kpc).
- * We use simple numerical radii to avoid expensive
- * Schwarzschild radius evaluations each step.
- * Both are expressed in terms of the grid cell size L/NMESH.
- */
-#define BH_STAR_COLLISION_RADIUS  (1.0f * (L / (float)NMESH))
-#define BH_BH_COLLISION_RADIUS    (1.5f * (L / (float)NMESH))
 
 /*
- * Perform one black hole collision / merge step.
+ * Simple BH collision / accretion model.
  *
- * Inputs:
- *   sys        : particle system (positions, velocities, masses, types, N)
- *   bh_indices : array of indices into sys->[positions,velocities,masses,types]
- *                that correspond to black holes. Size at least *n_bh.
- *   n_bh       : in/out, number of active BHs in bh_indices.
+ * We treat:
+ *   - TYPE_BH  particles as black holes
+ *   - TYPE_STAR particles as ※swallowable§ (stars / clusters)
  *
- * Behaviour:
- *   - Uses an NMESH^3 grid and a cell-linked list to find neighbours.
- *   - Stars within BH_STAR_COLLISION_RADIUS of a BH are swallowed.
- *   - BHs within BH_BH_COLLISION_RADIUS of each other are merged.
- *   - Dark matter never collides.
- *   - Removed particles are actually removed from the ParticleSystem by
- *     swapping with the last active particle and decrementing sys->N.
- *   - bh_indices[] and *n_bh are kept consistent with these removals.
+ * Collisions:
+ *   - BH每star:   star inside BH_STAR_COLLISION_RADIUS is swallowed.
+ *   - BH每BH:     BHs within BH_BH_COLLISION_RADIUS are merged.
  *
- * Parallelisation:
- *   - The construction of the cell-linked list is parallelised with OpenMP.
- *     The neighbour search and merges are kept serial (N_BH is small).
+ * Radii are in code units (kpc); you can tweak them to change how fast
+ * the BH grows.
+ */
+
+/* Only define if not defined elsewhere, so you can override in constants.h */
+#ifndef BH_STAR_COLLISION_RADIUS
+#define BH_STAR_COLLISION_RADIUS   0.5   /* BH每star swallow radius (kpc) */
+#endif
+
+#ifndef BH_BH_COLLISION_RADIUS
+#define BH_BH_COLLISION_RADIUS     0.2   /* BH每BH merge radius (kpc) */
+#endif
+
+#ifndef BH_MAX_COLLISIONS_PER_STEP
+#define BH_MAX_COLLISIONS_PER_STEP 1000000  /* safety cap */
+#endif
+
+/*
+ * One collision step:
+ *   - sys:        particle system (positions, velocities, masses, types, N)
+ *   - bh_indices: array of BH indices of length *n_bh
+ *   - n_bh:       in/out: number of BHs (may decrease if BHs merge)
+ *
+ * This function:
+ *   - modifies sys->N, positions, velocities, masses, types
+ *   - keeps bh_indices consistent when particles are swapped/removed
  */
 void bh_collision_step(ParticleSystem *sys,
-                       int           *bh_indices,
-                       int           *n_bh);
+                       int *bh_indices,
+                       int *n_bh);
 
 #endif /* BH_COLLISION_H */

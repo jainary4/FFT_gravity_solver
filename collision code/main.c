@@ -1,5 +1,3 @@
-// main.c – N-body galaxy collapse with FFT gravity and leapfrog integrator
-
 #include <stdio.h>
 #include <stdlib.h>
 #include <math.h>
@@ -16,11 +14,33 @@
 #include "fft_solver.h"
 #include "force.h"
 #include "integrator.h"
-#include "snapshot.h"      // for visualization
-// #include "bh_collision.h"   // optional, if/when you enable BH collisions
+#include "snapshot.h"   /* for write_xy_density_pgm() */
+#include "bh_collision.h"
 
 /* ------------------------------------------------------------
- * Optional helper: write a 3D field to text (for debugging)
+ * Simple helper: map x into [0, L) for periodic boundaries
+ * ------------------------------------------------------------ */
+static inline double wrap_box(double x)
+{
+    x = fmod(x, L);
+    if (x < 0.0) x += L;
+    if (x >= L)  x -= L;
+    return x;
+}
+
+/* ------------------------------------------------------------
+ * Periodic minimum-image separation in one dimension
+ * (not used directly here anymore, but kept for possible debug)
+ * ------------------------------------------------------------ */
+static inline double periodic_delta(double dx)
+{
+    if (dx >  0.5 * L) dx -= L;
+    if (dx < -0.5 * L) dx += L;
+    return dx;
+}
+
+/* ------------------------------------------------------------
+ * Optional: write a 3D field to text (debug)
  * ------------------------------------------------------------ */
 int write_to_txt(double ***phi, int N, const char *filepath)
 {
@@ -45,7 +65,6 @@ int write_to_txt(double ***phi, int N, const char *filepath)
         perror("write_to_txt: fclose");
         return -1;
     }
-
     return 0;
 }
 
@@ -104,10 +123,13 @@ static void total_momentum(const ParticleSystem *sys, double P[3])
 #pragma omp parallel for reduction(+:Px,Py,Pz) schedule(static)
 #endif
     for (int i = 0; i < sys->N; ++i) {
-        double m = sys->masses[i];
-        Px += m * sys->velocities[i].x;
-        Py += m * sys->velocities[i].y;
-        Pz += m * sys->velocities[i].z;
+        double m  = sys->masses[i];
+        double vx = sys->velocities[i].x;
+        double vy = sys->velocities[i].y;
+        double vz = sys->velocities[i].z;
+        Px += m * vx;
+        Py += m * vy;
+        Pz += m * vz;
     }
     P[0] = Px; P[1] = Py; P[2] = Pz;
 }
@@ -153,6 +175,27 @@ static void center_of_mass(const ParticleSystem *sys,
     }
 }
 
+static void total_angular_momentum(const ParticleSystem *sys, double Lvec[3])
+{
+    double Lx = 0.0, Ly = 0.0, Lz = 0.0;
+#ifdef _OPENMP
+#pragma omp parallel for reduction(+:Lx,Ly,Lz) schedule(static)
+#endif
+    for (int i = 0; i < sys->N; ++i) {
+        double m  = sys->masses[i];
+        double x  = sys->positions[i].x;
+        double y  = sys->positions[i].y;
+        double z  = sys->positions[i].z;
+        double vx = sys->velocities[i].x;
+        double vy = sys->velocities[i].y;
+        double vz = sys->velocities[i].z;
+        Lx += m * (y * vz - z * vy);
+        Ly += m * (z * vx - x * vz);
+        Lz += m * (x * vy - y * vx);
+    }
+    Lvec[0] = Lx; Lvec[1] = Ly; Lvec[2] = Lz;
+}
+
 /* Potential energy from mesh */
 static double potential_energy_from_mesh(double ***rho_pad,
                                          double ***phi_pad,
@@ -161,7 +204,6 @@ static double potential_energy_from_mesh(double ***rho_pad,
 {
     double W  = 0.0;
     double dV = h * h * h;
-
 #ifdef _OPENMP
 #pragma omp parallel for collapse(3) reduction(+:W) schedule(static)
 #endif
@@ -169,7 +211,6 @@ static double potential_energy_from_mesh(double ***rho_pad,
         for (int j = 0; j < Np; ++j)
             for (int k = 0; k < Np; ++k)
                 W += 0.5 * rho_pad[i][j][k] * phi_pad[i][j][k] * dV;
-
     return W;
 }
 
@@ -197,7 +238,7 @@ static int check_finite_state(const ParticleSystem *sys)
 }
 
 /* ------------------------------------------------------------
- * FFT-based gravity force function (called by integrator)
+ * FFT-based gravity force function (for integrator)
  * ------------------------------------------------------------ */
 static void gravity_fft_force(ParticleSystem *sys, void *vctx)
 {
@@ -262,7 +303,7 @@ static void gravity_fft_force(ParticleSystem *sys, void *vctx)
 }
 
 /* ------------------------------------------------------------
- * Virialization by *velocity* rescaling
+ * Virialization by velocity rescaling (does NOT move positions)
  * ------------------------------------------------------------ */
 static void rescale_velocities_to_target_virial(ParticleSystem *sys,
                                                 GravityFFTContext *gctx,
@@ -291,7 +332,6 @@ static void rescale_velocities_to_target_virial(ParticleSystem *sys,
     printf("[Virial] Target Q = %.3f, beta (velocity scale) = %.6e\n",
            Q_target, beta);
 
-    /* Scale all velocities */
 #ifdef _OPENMP
 #pragma omp parallel for schedule(static)
 #endif
@@ -316,12 +356,66 @@ static void rescale_velocities_to_target_virial(ParticleSystem *sys,
 }
 
 /* ------------------------------------------------------------
+ * Build BH index list by picking the N_BH most massive particles
+ * (helper lives in main; collision itself is in bh_collision.c)
+ * ------------------------------------------------------------ */
+static int build_bh_index_list(const ParticleSystem *sys,
+                               int *bh_indices,
+                               int max_bh)
+{
+    if (!sys || sys->N <= 0 || max_bh <= 0) return 0;
+
+    int N = sys->N;
+    char *used = (char*)calloc((size_t)N, sizeof(char));
+    if (!used) {
+        fprintf(stderr, "build_bh_index_list: allocation failed\n");
+        return 0;
+    }
+
+    int n_bh = 0;
+    for (int b = 0; b < max_bh; ++b) {
+        int    best = -1;
+        double mmax = -1.0;
+        for (int i = 0; i < N; ++i) {
+            if (used[i]) continue;
+            double m = sys->masses[i];
+            if (m > mmax) {
+                mmax = m;
+                best = i;
+            }
+        }
+        if (best < 0) break;
+        used[best] = 1;
+        bh_indices[n_bh++] = best;
+    }
+
+    free(used);
+    return n_bh;
+}
+
+/* total BH mass (for diagnostics) */
+static double bh_total_mass(const ParticleSystem *sys,
+                            const int *bh_indices,
+                            int n_bh)
+{
+    double M_bh = 0.0;
+    for (int b = 0; b < n_bh; ++b) {
+        int i = bh_indices[b];
+        if (i >= 0 && i < sys->N)
+            M_bh += sys->masses[i];
+    }
+    return M_bh;
+}
+
+/* ------------------------------------------------------------
  * main
  * ------------------------------------------------------------ */
 int main(void)
 {
 #ifdef _OPENMP
     printf("Running main with OpenMP, max threads = %d\n", omp_get_max_threads());
+#else
+    printf("Running main (no OpenMP)\n");
 #endif
 
     /* 1) Initialize particle system */
@@ -333,15 +427,33 @@ int main(void)
     }
     printf("  Loaded %d particles\n", sys->N);
 
+    /* Identify BHs by picking the N_BH heaviest particles. */
+    int bh_indices[N_BH];
+    int n_bh = build_bh_index_list(sys, bh_indices, N_BH);
+    if (n_bh <= 0) {
+        fprintf(stderr, "WARNING: no BHs identified (n_bh = %d)\n", n_bh);
+    } else {
+        printf("Identified %d BH(s):\n", n_bh);
+        for (int b = 0; b < n_bh; ++b) {
+            int i = bh_indices[b];
+            printf("  BH %d: index=%d mass=%.6e pos=(%.4f,%.4f,%.4f)\n",
+                   b, i, sys->masses[i],
+                   sys->positions[i].x,
+                   sys->positions[i].y,
+                   sys->positions[i].z);
+        }
+        printf("\n");
+    }
+
     /* 2) Create mesh */
-    printf("\nCreating particle mesh...\n");
+    printf("Creating particle mesh...\n");
     ParticleMesh *pm = create_particle_mesh();
     if (!pm) {
         fprintf(stderr, "ERROR: create_particle_mesh() returned NULL\n");
         destroy_particle_system(sys);
         return 1;
     }
-    printf("  Mesh: %d^3, cell size h = %.6f\n", pm->N, pm->cell_size);
+    printf("  Mesh: %d^3, cell size h = %.6f\n\n", pm->N, pm->cell_size);
 
     /* 3) Allocate padded grids for FFT */
     int Np = NMESH_PADDED;
@@ -382,14 +494,14 @@ int main(void)
         .last_potential_energy = 0.0
     };
 
-    /* 4) Virialize by velocity scaling */
+    /* 4) Virialize by velocity scaling (target Q = 0.5) */
     double M0, K0, W0, E0;
     const double Q_TARGET = 0.5;
 
     rescale_velocities_to_target_virial(sys, &gctx, Q_TARGET,
                                         &M0, &K0, &W0, &E0);
 
-    /* 5) Initial momentum & COM diagnostics */
+    /* 5) Initial momentum, COM, angular momentum */
     double P0[3]; total_momentum(sys, P0);
     double P0_mag = sqrt(P0[0]*P0[0] + P0[1]*P0[1] + P0[2]*P0[2]);
 
@@ -398,28 +510,59 @@ int main(void)
     double rcm0_mag = sqrt(rcm0[0]*rcm0[0] + rcm0[1]*rcm0[1] + rcm0[2]*rcm0[2]);
     double vcm0_mag = sqrt(vcm0[0]*vcm0[0] + vcm0[1]*vcm0[1] + vcm0[2]*vcm0[2]);
 
+    double L0[3]; total_angular_momentum(sys, L0);
+    double L0_mag = sqrt(L0[0]*L0[0] + L0[1]*L0[1] + L0[2]*L0[2]);
+
     printf("Initial diagnostics after velocity virial rescale:\n");
     printf("  M0   = %.6e\n", M0);
     printf("  K0   = %.6e\n  W0   = %.6e\n  E0   = %.6e\n", K0, W0, E0);
     printf("  |P0| = %.6e\n", P0_mag);
-    printf("  |r_cm0| = %.6e, |v_cm0| = %.6e\n\n", rcm0_mag, vcm0_mag);
+    printf("  |r_cm0| = %.6e, |v_cm0| = %.6e\n", rcm0_mag, vcm0_mag);
+    printf("  |L0|    = %.6e\n\n", L0_mag);
 
     /* 6) Time integration parameters */
     double dt           = 0.01;
-    int    n_steps      = 1000;
-    int    output_every   = 10;
+    int    n_steps      = 2000;
+    int    output_every = 10;
 
-    /* snapshots: every 5 steps → 200 frames for 1000 steps */
-    int    snapshot_every = 5;
+    /* snapshots: every 10 steps -> 200 frames over 2000 steps */
+    int    snapshot_every = 10;
     int    imgN           = 512;
     int    frame_id       = 0;
 
-    printf("# step   t        K           W           E         dE/E0      dM/M0     |P|        |r_cm|    |v_cm|\n");
+    /* BH collision parameters: how often to call the subgrid model */
+    int    bh_every      = 5;   /* collision every 5 steps */
+    int    bh_swallowed_total        = 0;
+    int    bh_swallowed_since_output = 0;
+
+    printf("# step   t        N         K           W           E         dE/E0      dM/M0     |P|        |r_cm|    |v_cm|    |L|      M_BH    dN_BH\n");
 
     for (int step = 0; step < n_steps; ++step) {
 
+        /* Integrate one leapfrog step */
         leapfrog_step(sys, dt, gravity_fft_force, &gctx);
 
+        /* BH collision / accretion step (sub-grid) */
+        if (n_bh > 0 && (step + 1) % bh_every == 0) {
+            int N_before       = sys->N;
+            double M_bh_before = bh_total_mass(sys, bh_indices, n_bh);
+
+            bh_collision_step(sys, bh_indices, &n_bh);
+
+            int N_after       = sys->N;
+            double M_bh_after = bh_total_mass(sys, bh_indices, n_bh);
+
+            int bh_swallowed_step = N_before - N_after;
+            if (bh_swallowed_step < 0) bh_swallowed_step = 0;
+
+            bh_swallowed_total        += bh_swallowed_step;
+            bh_swallowed_since_output += bh_swallowed_step;
+
+            (void)M_bh_before;
+            (void)M_bh_after;
+        }
+
+        /* Diagnostics & output */
         if ((step + 1) % output_every == 0 || step == 0) {
             double K  = total_kinetic(sys);
             double W  = gctx.last_potential_energy;
@@ -437,20 +580,33 @@ int main(void)
             double rcm_mag = sqrt(rcm[0]*rcm[0] + rcm[1]*rcm[1] + rcm[2]*rcm[2]);
             double vcm_mag = sqrt(vcm[0]*vcm[0] + vcm[1]*vcm[1] + vcm[2]*vcm[2]);
 
-            printf("%6d  %8.3e  %11.4e  %11.4e  %11.4e  %9.2e  %9.2e  %11.4e  %8.3e  %8.3e\n",
+            // NOTE: avoid name 'L' here because of macro L from constants.h
+            double Lvec[3]; 
+            total_angular_momentum(sys, Lvec);
+            double L_mag = sqrt(Lvec[0]*Lvec[0] + Lvec[1]*Lvec[1] + Lvec[2]*Lvec[2]);
+
+            double M_bh = (n_bh > 0) ? bh_total_mass(sys, bh_indices, n_bh) : 0.0;
+
+            printf("%6d  %8.3e  %8d  %11.4e  %11.4e  %11.4e  %9.2e  %9.2e  %11.4e  %8.3e  %8.3e  %8.3e  %8.3e  %6d\n",
                    step + 1,
                    (step + 1) * dt,
+                   sys->N,
                    K, W, E,
                    dE, dM,
-                   P_mag, rcm_mag, vcm_mag);
+                   P_mag, rcm_mag, vcm_mag, L_mag,
+                   M_bh, bh_swallowed_since_output);
+
+            /* reset per-output counter */
+            bh_swallowed_since_output = 0;
         }
 
-        /* snapshots with consecutive numbering */
+        /* snapshots for visualization */
         if (snapshot_every > 0 && (step + 1) % snapshot_every == 0) {
             frame_id++;
             char fname[256];
-            snprintf(fname, sizeof(fname), "frames/frame_%04d.pgm", frame_id);
-            int rc = write_xy_density_pgm(sys, imgN, fname);
+            snprintf(fname, sizeof(fname), "frames/frame_%04d.ppm", frame_id);
+
+            int rc = write_xy_density_ppm_color(sys, bh_indices, n_bh, imgN, fname);
             if (rc != 0) {
                 fprintf(stderr,
                         "WARNING: failed to write snapshot %s at step %d\n",
@@ -465,6 +621,8 @@ int main(void)
             break;
         }
     }
+
+    printf("\nTotal BH-swallowed particles: %d\n", bh_swallowed_total);
 
     /* 7) Cleanup */
     free_3d_array(rho_pad, Np);
