@@ -1,3 +1,5 @@
+// main.c – N-body galaxy collapse with FFT gravity and leapfrog integrator
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <math.h>
@@ -10,37 +12,37 @@
 #include "structs.h"
 #include "particles.h"
 #include "mesh.h"
-#include "fft_solver.h"
 #include "poisson.h"
+#include "fft_solver.h"
 #include "force.h"
 #include "integrator.h"
+#include "snapshot.h"      // for visualization
+// #include "bh_collision.h"   // optional, if/when you enable BH collisions
 
 /* ------------------------------------------------------------
- * Utility: write a 3D field to text for debugging
+ * Optional helper: write a 3D field to text (for debugging)
  * ------------------------------------------------------------ */
-int write_to_txt(double ***phi, int N, const char *filepath) {
+int write_to_txt(double ***phi, int N, const char *filepath)
+{
     if (!phi || N <= 0 || !filepath) return -1;
 
     FILE *f = fopen(filepath, "w");
     if (!f) {
-        perror("write_phi_to_txt: fopen");
+        perror("write_to_txt: fopen");
         return -1;
     }
 
-    for (int i = 0; i < N; ++i) {
-        for (int j = 0; j < N; ++j) {
-            for (int k = 0; k < N; ++k) {
+    for (int i = 0; i < N; ++i)
+        for (int j = 0; j < N; ++j)
+            for (int k = 0; k < N; ++k)
                 if (fprintf(f, "%.17g\n", phi[i][j][k]) < 0) {
-                    perror("write_phi_to_txt: fprintf");
+                    perror("write_to_txt: fprintf");
                     fclose(f);
                     return -1;
                 }
-            }
-        }
-    }
 
     if (fclose(f) != 0) {
-        perror("write_phi_to_txt: fclose");
+        perror("write_to_txt: fclose");
         return -1;
     }
 
@@ -51,33 +53,36 @@ int write_to_txt(double ***phi, int N, const char *filepath) {
  * Gravity context for FFT-based force computation
  * ------------------------------------------------------------ */
 typedef struct {
-    ParticleMesh *pm;
-    int   Np;                 // padded grid size (NMESH_PADDED)
-    int   offset;             // placement of physical grid in padded grid
-    double h;                 // cell size (kpc)
-    double ***rho_pad;        // padded density grid
-    double ***force_x;        // padded force grids
-    double ***force_y;
-    double ***force_z;
+    ParticleMesh *pm;      /* physical mesh (NMESH^3)      */
+    int           Np;      /* padded grid size             */
+    int           offset;  /* physical mesh offset in pad  */
+    double        h;       /* cell size                    */
 
-    double last_potential_energy;  // W at last force evaluation
+    double      ***rho_pad;
+    double      ***force_x;
+    double      ***force_y;
+    double      ***force_z;
+
+    double        last_potential_energy;  /* for diagnostics */
 } GravityFFTContext;
 
 /* ------------------------------------------------------------
  * Diagnostics helpers
  * ------------------------------------------------------------ */
-static double total_mass(const ParticleSystem *sys) {
+
+static double total_mass(const ParticleSystem *sys)
+{
     double M = 0.0;
 #ifdef _OPENMP
 #pragma omp parallel for reduction(+:M) schedule(static)
 #endif
-    for (int i = 0; i < sys->N; ++i) {
+    for (int i = 0; i < sys->N; ++i)
         M += sys->masses[i];
-    }
     return M;
 }
 
-static double total_kinetic(const ParticleSystem *sys) {
+static double total_kinetic(const ParticleSystem *sys)
+{
     double K = 0.0;
 #ifdef _OPENMP
 #pragma omp parallel for reduction(+:K) schedule(static)
@@ -92,7 +97,8 @@ static double total_kinetic(const ParticleSystem *sys) {
     return K;
 }
 
-static void total_momentum(const ParticleSystem *sys, double P[3]) {
+static void total_momentum(const ParticleSystem *sys, double P[3])
+{
     double Px = 0.0, Py = 0.0, Pz = 0.0;
 #ifdef _OPENMP
 #pragma omp parallel for reduction(+:Px,Py,Pz) schedule(static)
@@ -107,8 +113,9 @@ static void total_momentum(const ParticleSystem *sys, double P[3]) {
 }
 
 static void center_of_mass(const ParticleSystem *sys,
-                           double r_cm[3], double v_cm[3]) {
-    double M = 0.0;
+                           double r_cm[3], double v_cm[3])
+{
+    double M  = 0.0;
     double Rx = 0.0, Ry = 0.0, Rz = 0.0;
     double Vx = 0.0, Vy = 0.0, Vz = 0.0;
 
@@ -146,39 +153,29 @@ static void center_of_mass(const ParticleSystem *sys,
     }
 }
 
-/* Potential energy from mesh:
- *   W = 1/2 ∑_physical ρ(x) φ(x) dV
- * We assume the physical cube is [offset, offset+pm->N) in each dim.
- */
+/* Potential energy from mesh */
 static double potential_energy_from_mesh(double ***rho_pad,
                                          double ***phi_pad,
-                                         const ParticleMesh *pm,
-                                         int offset)
+                                         int Np,
+                                         double h)
 {
-    int N_phys = pm->N;
-    double dV  = pm->cell_size * pm->cell_size * pm->cell_size;
-    double W   = 0.0;
+    double W  = 0.0;
+    double dV = h * h * h;
 
 #ifdef _OPENMP
-#pragma omp parallel for reduction(+:W) schedule(static)
+#pragma omp parallel for collapse(3) reduction(+:W) schedule(static)
 #endif
-    for (int i = 0; i < N_phys; ++i) {
-        int ii = i + offset;
-        for (int j = 0; j < N_phys; ++j) {
-            int jj = j + offset;
-            for (int k = 0; k < N_phys; ++k) {
-                int kk = k + offset;
-                double rho = rho_pad[ii][jj][kk];
-                double phi = phi_pad[ii][jj][kk];
-                W += 0.5 * rho * phi * dV;
-            }
-        }
-    }
+    for (int i = 0; i < Np; ++i)
+        for (int j = 0; j < Np; ++j)
+            for (int k = 0; k < Np; ++k)
+                W += 0.5 * rho_pad[i][j][k] * phi_pad[i][j][k] * dV;
+
     return W;
 }
 
-/* Basic NaN/Inf check to catch blow-ups early */
-static int check_finite_state(const ParticleSystem *sys) {
+/* Check for NaN/Inf in particle positions & velocities */
+static int check_finite_state(const ParticleSystem *sys)
+{
     for (int i = 0; i < sys->N; ++i) {
         double x  = sys->positions[i].x;
         double y  = sys->positions[i].y;
@@ -190,8 +187,8 @@ static int check_finite_state(const ParticleSystem *sys) {
         if (!isfinite(x) || !isfinite(y) || !isfinite(z) ||
             !isfinite(vx) || !isfinite(vy) || !isfinite(vz)) {
             fprintf(stderr,
-                    "Non-finite value in particle %d: "
-                    "pos=(%g,%g,%g), vel=(%g,%g,%g)\n",
+                    "Non-finite state: particle %d "
+                    "pos=(%g,%g,%g) vel=(%g,%g,%g)\n",
                     i, x,y,z, vx,vy,vz);
             return 0;
         }
@@ -208,31 +205,28 @@ static void gravity_fft_force(ParticleSystem *sys, void *vctx)
     if (!sys || !ctx || !ctx->pm ||
         !ctx->rho_pad || !ctx->force_x ||
         !ctx->force_y || !ctx->force_z) {
-        fprintf(stderr, "gravity_fft_force: NULL pointer(s) in context\n");
+        fprintf(stderr, "gravity_fft_force: invalid context\n");
         return;
     }
 
-    const int Np     = ctx->Np;
+    const int Np = ctx->Np;
     ParticleMesh *pm = ctx->pm;
-    const int offset = ctx->offset;
+    const double h = pm->cell_size;
+    const int offset = ctx->offset;  /* currently 0 */
 
     /* 1) Zero padded density grid */
 #ifdef _OPENMP
-#pragma omp parallel for schedule(static)
+#pragma omp parallel for collapse(3) schedule(static)
 #endif
-    for (int i = 0; i < Np; ++i) {
-        for (int j = 0; j < Np; ++j) {
-            for (int k = 0; k < Np; ++k) {
+    for (int i = 0; i < Np; ++i)
+        for (int j = 0; j < Np; ++j)
+            for (int k = 0; k < Np; ++k)
                 ctx->rho_pad[i][j][k] = 0.0;
-            }
-        }
-    }
 
-    /* 2) Assign particle mass to grid via CIC */
-    assign_mass_cic_padded(ctx->rho_pad, Np, sys,
-                           pm->N, pm->cell_size, offset);
+    /* 2) Assign particle mass to mesh via padded CIC */
+    assign_mass_cic_padded(ctx->rho_pad, Np, sys, pm->N, h, offset);
 
-    /* 3) Build Laplacian RHS (4πGρ) on padded grid */
+    /* 3) Build Laplacian RHS (4πGρ) and solve Poisson for phi */
     double ***laplacian_phi_pad = create_laplacian_equation(Np, ctx->rho_pad);
     if (!laplacian_phi_pad) {
         fprintf(stderr,
@@ -240,8 +234,7 @@ static void gravity_fft_force(ParticleSystem *sys, void *vctx)
         return;
     }
 
-    /* 4) Solve Poisson via FFT -> potential phi_pad */
-    double ***phi_pad = solve_poisson_fftw(laplacian_phi_pad, Np, pm->cell_size);
+    double ***phi_pad = solve_poisson_fftw(laplacian_phi_pad, Np, h);
     if (!phi_pad) {
         fprintf(stderr,
                 "gravity_fft_force: solve_poisson_fftw returned NULL\n");
@@ -249,36 +242,35 @@ static void gravity_fft_force(ParticleSystem *sys, void *vctx)
         return;
     }
 
-    /* 5) Compute gravitational forces from potential on the grid */
-    compute_forces_from_potential(phi_pad, Np, pm->cell_size,
-                                  ctx->force_x, ctx->force_y, ctx->force_z);
+    /* 4) Compute forces on padded grid (periodic stencil) */
+    compute_forces_from_potential(phi_pad, Np, h,
+                                  ctx->force_x,
+                                  ctx->force_y,
+                                  ctx->force_z);
 
-    /* 6) Compute potential energy for diagnostics (on physical sub-grid) */
+    /* 5) Compute potential energy (for diagnostics) */
     ctx->last_potential_energy =
-        potential_energy_from_mesh(ctx->rho_pad, phi_pad, pm, offset);
+        potential_energy_from_mesh(ctx->rho_pad, phi_pad, Np, h);
 
-    /* 7) Gather forces to particles => fills sys->accelerations */
+    /* 6) Gather forces to particles => sys->accelerations */
     gather_forces_to_particles(ctx->force_x, ctx->force_y, ctx->force_z,
-                               Np, sys, pm->N, pm->cell_size, offset);
+                               Np, sys, pm->N, h, offset);
 
-    /* 8) Free temporary Laplacian and potential fields */
+    /* 7) Free temporaries */
     free_3d_array(laplacian_phi_pad, Np);
     free_3d_array(phi_pad, Np);
 }
 
 /* ------------------------------------------------------------
- * Virial mass rescaling:
- *   given current K, W, compute Q0 = 2K/|W|.
- *   scale all masses by alpha = Q0 / Q_target.
- *   after scaling, Q_new ≈ Q_target.
+ * Virialization by *velocity* rescaling
  * ------------------------------------------------------------ */
-static void rescale_masses_to_target_virial(ParticleSystem *sys,
-                                            GravityFFTContext *gctx,
-                                            double Q_target,
-                                            double *M0, double *K0,
-                                            double *W0, double *E0)
+static void rescale_velocities_to_target_virial(ParticleSystem *sys,
+                                                GravityFFTContext *gctx,
+                                                double Q_target,
+                                                double *M0, double *K0,
+                                                double *W0, double *E0)
 {
-    /* First compute current K, W, M */
+    /* Compute current K, W, M */
     gravity_fft_force(sys, gctx);
     *K0 = total_kinetic(sys);
     *W0 = gctx->last_potential_energy;
@@ -287,27 +279,29 @@ static void rescale_masses_to_target_virial(ParticleSystem *sys,
 
     if (fabs(*W0) <= 0.0 || Q_target <= 0.0) {
         fprintf(stderr,
-                "rescale_masses_to_target_virial: invalid W0 or Q_target\n");
+                "rescale_velocities_to_target_virial: invalid W0 or Q_target\n");
         return;
     }
 
-    double Q0 = 2.0 * (*K0) / fabs(*W0);
+    double Q0   = 2.0 * (*K0) / fabs(*W0);
+    double beta = sqrt(Q_target / Q0);
+
     printf("\n[Virial init] K0 = %.6e, W0 = %.6e, M0 = %.6e\n", *K0, *W0, *M0);
     printf("[Virial init] Q0 = 2K/|W| = %.6e\n", Q0);
+    printf("[Virial] Target Q = %.3f, beta (velocity scale) = %.6e\n",
+           Q_target, beta);
 
-    double alpha = Q0 / Q_target;
-    printf("[Virial] Target Q = %.3f, alpha = Q0/Q_target = %.6e\n",
-           Q_target, alpha);
-
-    /* Scale all masses */
+    /* Scale all velocities */
 #ifdef _OPENMP
 #pragma omp parallel for schedule(static)
 #endif
     for (int i = 0; i < sys->N; ++i) {
-        sys->masses[i] *= alpha;
+        sys->velocities[i].x *= beta;
+        sys->velocities[i].y *= beta;
+        sys->velocities[i].z *= beta;
     }
 
-    /* Recompute diagnostics with new masses */
+    /* Recompute diagnostics after rescaling */
     gravity_fft_force(sys, gctx);
     *K0 = total_kinetic(sys);
     *W0 = gctx->last_potential_energy;
@@ -315,15 +309,14 @@ static void rescale_masses_to_target_virial(ParticleSystem *sys,
     *E0 = *K0 + *W0;
     double Q_new = 2.0 * (*K0) / fabs(*W0);
 
-    printf("[Virial] After mass rescale:\n");
+    printf("[Virial] After velocity rescale:\n");
     printf("         M0 = %.6e, K0 = %.6e, W0 = %.6e, E0 = %.6e\n",
            *M0, *K0, *W0, *E0);
     printf("         Q_new = 2K/|W| = %.6e\n\n", Q_new);
 }
 
 /* ------------------------------------------------------------
- * main: set up system, rescale masses to target virial ratio,
- *       run symplectic integration, print diagnostics
+ * main
  * ------------------------------------------------------------ */
 int main(void)
 {
@@ -331,7 +324,7 @@ int main(void)
     printf("Running main with OpenMP, max threads = %d\n", omp_get_max_threads());
 #endif
 
-    /* 1) Particles */
+    /* 1) Initialize particle system */
     printf("Initializing particle system...\n");
     ParticleSystem *sys = initialize_particle_system();
     if (!sys) {
@@ -340,7 +333,7 @@ int main(void)
     }
     printf("  Loaded %d particles\n", sys->N);
 
-    /* 2) Mesh */
+    /* 2) Create mesh */
     printf("\nCreating particle mesh...\n");
     ParticleMesh *pm = create_particle_mesh();
     if (!pm) {
@@ -348,10 +341,9 @@ int main(void)
         destroy_particle_system(sys);
         return 1;
     }
-    printf("  Grid: %d^3\n", pm->N);
-    printf("  Cell size: %.3f kpc\n", pm->cell_size);
+    printf("  Mesh: %d^3, cell size h = %.6f\n", pm->N, pm->cell_size);
 
-    /* 3) Padded grids for FFT solver */
+    /* 3) Allocate padded grids for FFT */
     int Np = NMESH_PADDED;
     if (Np <= 0) {
         fprintf(stderr, "ERROR: NMESH_PADDED must be > 0\n");
@@ -360,19 +352,19 @@ int main(void)
         return 1;
     }
 
-    int offset = 0;  /* physical grid at corner of padded grid */
+    int offset = 0;  /* physical mesh at corner of padded grid */
 
-    double ***rho_pad   = allocate_3d_array(Np);
-    double ***force_x   = allocate_3d_array(Np);
-    double ***force_y   = allocate_3d_array(Np);
-    double ***force_z   = allocate_3d_array(Np);
+    double ***rho_pad = allocate_3d_array(Np);
+    double ***fx      = allocate_3d_array(Np);
+    double ***fy      = allocate_3d_array(Np);
+    double ***fz      = allocate_3d_array(Np);
 
-    if (!rho_pad || !force_x || !force_y || !force_z) {
+    if (!rho_pad || !fx || !fy || !fz) {
         fprintf(stderr, "ERROR: allocate_3d_array failed for padded grids\n");
         if (rho_pad) free_3d_array(rho_pad, Np);
-        if (force_x) free_3d_array(force_x, Np);
-        if (force_y) free_3d_array(force_y, Np);
-        if (force_z) free_3d_array(force_z, Np);
+        if (fx)      free_3d_array(fx, Np);
+        if (fy)      free_3d_array(fy, Np);
+        if (fz)      free_3d_array(fz, Np);
         destroy_particle_mesh(pm);
         destroy_particle_system(sys);
         return 1;
@@ -384,19 +376,20 @@ int main(void)
         .offset = offset,
         .h    = pm->cell_size,
         .rho_pad = rho_pad,
-        .force_x = force_x,
-        .force_y = force_y,
-        .force_z = force_z,
+        .force_x = fx,
+        .force_y = fy,
+        .force_z = fz,
         .last_potential_energy = 0.0
     };
 
-    /* 4) Automatically rescale masses to a target virial ratio */
+    /* 4) Virialize by velocity scaling */
     double M0, K0, W0, E0;
-    const double Q_TARGET = 0.5;    /* choose 0.3–0.7 for nice collapse */
+    const double Q_TARGET = 0.5;
 
-    rescale_masses_to_target_virial(sys, &gctx, Q_TARGET, &M0, &K0, &W0, &E0);
+    rescale_velocities_to_target_virial(sys, &gctx, Q_TARGET,
+                                        &M0, &K0, &W0, &E0);
 
-    /* 5) Initial momentum / COM diagnostics */
+    /* 5) Initial momentum & COM diagnostics */
     double P0[3]; total_momentum(sys, P0);
     double P0_mag = sqrt(P0[0]*P0[0] + P0[1]*P0[1] + P0[2]*P0[2]);
 
@@ -405,33 +398,36 @@ int main(void)
     double rcm0_mag = sqrt(rcm0[0]*rcm0[0] + rcm0[1]*rcm0[1] + rcm0[2]*rcm0[2]);
     double vcm0_mag = sqrt(vcm0[0]*vcm0[0] + vcm0[1]*vcm0[1] + vcm0[2]*vcm0[2]);
 
-    printf("Initial diagnostics after virial rescale:\n");
+    printf("Initial diagnostics after velocity virial rescale:\n");
     printf("  M0   = %.6e\n", M0);
     printf("  K0   = %.6e\n  W0   = %.6e\n  E0   = %.6e\n", K0, W0, E0);
     printf("  |P0| = %.6e\n", P0_mag);
     printf("  |r_cm0| = %.6e, |v_cm0| = %.6e\n\n", rcm0_mag, vcm0_mag);
 
     /* 6) Time integration parameters */
-    double dt           = 0.01;   /* adjust if needed */
-    int    n_steps      = 1000;   /* total steps */
-    int    output_every = 10;     /* diagnostics every N steps */
+    double dt           = 0.01;
+    int    n_steps      = 1000;
+    int    output_every   = 10;
+
+    /* snapshots: every 5 steps → 200 frames for 1000 steps */
+    int    snapshot_every = 5;
+    int    imgN           = 512;
+    int    frame_id       = 0;
 
     printf("# step   t        K           W           E         dE/E0      dM/M0     |P|        |r_cm|    |v_cm|\n");
 
     for (int step = 0; step < n_steps; ++step) {
-        /* One symplectic step: choose leapfrog or 4th-order */
+
         leapfrog_step(sys, dt, gravity_fft_force, &gctx);
-        // symplectic4_step(sys, dt, gravity_fft_force, &gctx);
 
         if ((step + 1) % output_every == 0 || step == 0) {
-            double K = total_kinetic(sys);
-            double W = gctx.last_potential_energy;
-            double E = K + W;
+            double K  = total_kinetic(sys);
+            double W  = gctx.last_potential_energy;
+            double E  = K + W;
+            double dE = (fabs(E0) > 0.0) ? (E - E0) / fabs(E0) : 0.0;
 
-            double dE_rel = (fabs(E0) > 0.0) ? (E - E0) / fabs(E0) : 0.0;
-
-            double M = total_mass(sys);
-            double dM_rel = (M0 != 0.0) ? (M - M0) / M0 : 0.0;
+            double M  = total_mass(sys);
+            double dM = (M0 != 0.0) ? (M - M0) / M0 : 0.0;
 
             double P[3]; total_momentum(sys, P);
             double P_mag = sqrt(P[0]*P[0] + P[1]*P[1] + P[2]*P[2]);
@@ -445,8 +441,21 @@ int main(void)
                    step + 1,
                    (step + 1) * dt,
                    K, W, E,
-                   dE_rel, dM_rel,
+                   dE, dM,
                    P_mag, rcm_mag, vcm_mag);
+        }
+
+        /* snapshots with consecutive numbering */
+        if (snapshot_every > 0 && (step + 1) % snapshot_every == 0) {
+            frame_id++;
+            char fname[256];
+            snprintf(fname, sizeof(fname), "frames/frame_%04d.pgm", frame_id);
+            int rc = write_xy_density_pgm(sys, imgN, fname);
+            if (rc != 0) {
+                fprintf(stderr,
+                        "WARNING: failed to write snapshot %s at step %d\n",
+                        fname, step + 1);
+            }
         }
 
         if (!check_finite_state(sys)) {
@@ -459,9 +468,9 @@ int main(void)
 
     /* 7) Cleanup */
     free_3d_array(rho_pad, Np);
-    free_3d_array(force_x, Np);
-    free_3d_array(force_y, Np);
-    free_3d_array(force_z, Np);
+    free_3d_array(fx,      Np);
+    free_3d_array(fy,      Np);
+    free_3d_array(fz,      Np);
     destroy_particle_mesh(pm);
     destroy_particle_system(sys);
 

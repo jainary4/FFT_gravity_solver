@@ -29,6 +29,14 @@ BH_COLLISION_OBJS = bh_collision.o
 # Simple BH example binary
 BH_EXAMPLE_OBJS   = bh_collision_example.o $(BH_COLLISION_OBJS)
 
+PM_DEBUG_OBJS = pm_energy_debug.o \
+                mesh.o            \
+                particles.o       \
+                random.o          \
+                poisson.o         \
+                fft_solver.o      \
+                force.o
+
 # Unit-test style BH tests (uses particles + mesh + random)
 BH_TESTS_OBJS     = bh_collision_tests.o \
                     bh_collision.o      \
@@ -45,7 +53,8 @@ MAIN_OBJS         = main.o      \
                     fft_solver.o \
                     force.o     \
                     bh_collision.o \
-                    integrator.o
+                    integrator.o \
+                    snapshot.o
 
 # Symplectic integrator tests (no FFTW needed)
 INTEGRATOR_TEST_OBJS = integrator_tests.o integrator.o
@@ -71,10 +80,12 @@ bh_collision_tests: $(BH_TESTS_OBJS)
 integrator_tests: $(INTEGRATOR_TEST_OBJS)
 	$(CC) $(CFLAGS) -o $@ $^ $(LDLIBS)
 
-# FFT tests (uses FFTW)
-fft_tests: fft_tests.o fft_solver.o
+pm_energy_debug: $(PM_DEBUG_OBJS)
 	$(CC) $(CFLAGS) -o $@ $^ $(LDLIBS) $(FFTW_LIBS)
 
+# FFT tests (uses FFTW)
+fft_tests: fft_tests.o fft_solver.o mesh.o
+	$(CC) $(CFLAGS) -o $@ $^ $(LDLIBS) $(FFTW_LIBS)
 
 # Full simulation (uses FFTW)
 main: $(MAIN_OBJS)
@@ -105,4 +116,6 @@ clean:
 	      bh_collision_example \
 	      bh_collision_tests \
 	      integrator_tests \
+	      pm_energy_debug \
+	      fft_tests \
 	      main
