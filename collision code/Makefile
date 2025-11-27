@@ -12,7 +12,8 @@ CFLAGS  = -std=c99 -O3 -Wall -Wextra -openmp
 LDLIBS  = -lm
 
 # ----------------------------------------------------------------------
-# FFTW installation (you said it's here: $(HOME)/A4FFTSolver/fftw-install)
+# FFTW installation
+# (you said it's here: $(HOME)/A4FFTSolver/fftw-install)
 # ----------------------------------------------------------------------
 FFTW_PREFIX = $(HOME)/A4FFTSolver/fftw-install
 FFTW_INC    = -I$(FFTW_PREFIX)/include
@@ -25,7 +26,7 @@ FFTW_LIBS   = -L$(FFTW_PREFIX)/lib -lfftw3 -lfftw3_omp
 # Core BH collision code
 BH_COLLISION_OBJS = bh_collision.o
 
-# Simple example binary
+# Simple BH example binary
 BH_EXAMPLE_OBJS   = bh_collision_example.o $(BH_COLLISION_OBJS)
 
 # Unit-test style BH tests (uses particles + mesh + random)
@@ -43,12 +44,18 @@ MAIN_OBJS         = main.o      \
                     poisson.o   \
                     fft_solver.o \
                     force.o     \
-                    bh_collision.o
+                    bh_collision.o \
+                    integrator.o
+
+# Symplectic integrator tests (no FFTW needed)
+INTEGRATOR_TEST_OBJS = integrator_tests.o integrator.o
 
 # ----------------------------------------------------------------------
-# Default target: just build the BH example
+# Default target: build everything useful
 # ----------------------------------------------------------------------
-all: bh_collision_example
+.PHONY: all clean tests
+
+all: main bh_collision_example bh_collision_tests integrator_tests
 
 # ----------------------------------------------------------------------
 # Executable targets
@@ -58,6 +65,10 @@ bh_collision_example: $(BH_EXAMPLE_OBJS)
 	$(CC) $(CFLAGS) -o $@ $^ $(LDLIBS)
 
 bh_collision_tests: $(BH_TESTS_OBJS)
+	$(CC) $(CFLAGS) -o $@ $^ $(LDLIBS)
+
+# Symplectic integrator tests (harmonic + Kepler, etc.)
+integrator_tests: $(INTEGRATOR_TEST_OBJS)
 	$(CC) $(CFLAGS) -o $@ $^ $(LDLIBS)
 
 # Full simulation (uses FFTW)
@@ -80,12 +91,13 @@ fft_solver.o: fft_solver.c
 # Housekeeping
 # ----------------------------------------------------------------------
 
-.PHONY: all clean tests
-
-tests: bh_collision_tests
+tests: bh_collision_tests integrator_tests
+	./bh_collision_tests
+	./integrator_tests
 
 clean:
 	rm -f *.o \
 	      bh_collision_example \
 	      bh_collision_tests \
+	      integrator_tests \
 	      main
