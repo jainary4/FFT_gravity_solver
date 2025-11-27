@@ -224,7 +224,7 @@ int write_xy_density_ppm_color(const ParticleSystem *sys,
     /* map to RGB:
      *  - stars: white (R=G=B)
      *  - DM: purple (R and B, little green)
-     *  - BH: strongly red; if BH present in pixel, red dominates
+     *  - BH: red
      *  - background: black (no mass)
      */
 #ifdef _OPENMP
@@ -285,6 +285,47 @@ int write_xy_density_ppm_color(const ParticleSystem *sys,
             rgb[3*idx + 0] = (unsigned char)(255.0 * red   + 0.5);
             rgb[3*idx + 1] = (unsigned char)(255.0 * green + 0.5);
             rgb[3*idx + 2] = (unsigned char)(255.0 * blue  + 0.5);
+        }
+    }
+
+    /* Overpaint BHs with larger red dots so they are clearly visible */
+    if (bh_indices && n_bh > 0) {
+        /* radius in pixels: scale with resolution, min ~2¨C3 */
+        int r_pix = imgN / 128;   /* e.g. 512 -> 4, 256 -> 2 */
+        if (r_pix < 2) r_pix = 2;
+
+        for (int bidx = 0; bidx < n_bh; ++bidx) {
+            int p = bh_indices[bidx];
+            if (p < 0 || p >= sys->N) continue;
+
+            double x = wrap_box(sys->positions[p].x);
+            double y = wrap_box(sys->positions[p].y);
+
+            int ix = (int)(x / L * imgN);
+            int iy = (int)(y / L * imgN);
+
+            if (ix < 0)      ix = 0;
+            if (ix >= imgN)  ix = imgN - 1;
+            if (iy < 0)      iy = 0;
+            if (iy >= imgN)  iy = imgN - 1;
+
+            for (int dy = -r_pix; dy <= r_pix; ++dy) {
+                int jy = iy + dy;
+                if (jy < 0 || jy >= imgN) continue;
+                for (int dx = -r_pix; dx <= r_pix; ++dx) {
+                    int jx = ix + dx;
+                    if (jx < 0 || jx >= imgN) continue;
+                    /* optional: make it circular instead of square */
+                    int ddx = dx;
+                    int ddy = dy;
+                    if (ddx*ddx + ddy*ddy > r_pix*r_pix) continue;
+
+                    size_t idx_pix = (size_t)jy * imgN + jx;
+                    rgb[3*idx_pix + 0] = 255;
+                    rgb[3*idx_pix + 1] = 0;
+                    rgb[3*idx_pix + 2] = 0;
+                }
+            }
         }
     }
 
