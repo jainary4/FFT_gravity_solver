@@ -1,15 +1,15 @@
 #ifndef CONSTANTS_H
 #define CONSTANTS_H
 
-#define N_STARS      200      // 20 million stars
-#define N_DM         800      // 80 million dark matter
-#define N_BH         1            // 10 black holes
+#define N_STARS      200000      // 20 million stars
+#define N_DM         800000      // 80 million dark matter
+#define N_BH         10            // 10 black holes
 #define N_TOTAL      (N_STARS + N_DM + N_BH)
 
 // Box and grid
-#define L            10.0         // Box size (kpc)
-#define NMESH        8         // Physical grid (before padding)
-#define NMESH_PADDED 16           // After zero-padding
+#define L            10.0      // Box size (kpc)
+#define NMESH        64        // Physical grid (before padding)
+#define NMESH_PADDED 128       // After zero-padding
 
 // Masses (total normalized to 1.0)
 #define M_TOTAL      1.0
