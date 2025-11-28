@@ -19,31 +19,8 @@ static inline double wrap_box(double x)
     return x;
 }
 
-/* ---------- helper: log stretch 0..1 -> 0..1 ---------- */
-static inline double log_stretch(double x)
-{
-    if (x <= 0.0) return 0.0;
-    if (x > 1.0)  x = 1.0;
-    const double S = 9.0;
-    const double D = 1.0 / log(1.0 + S);
-    return log(1.0 + S * x) * D;
-}
+/* ---------- grayscale version (old) ---------- */
 
-/* BH membership test (N_BH is tiny, so O(N_BH) is fine) */
-static inline int is_bh_particle(int p, const int *bh_indices, int n_bh)
-{
-    if (!bh_indices || n_bh <= 0) return 0;
-    for (int b = 0; b < n_bh; ++b) {
-        if (bh_indices[b] == p) return 1;
-    }
-    return 0;
-}
-
-/* ----------------------------------------------------------------------
- * Grayscale projection onto x每z plane.
- * We keep the old name write_xy_density_pgm for compatibility, but the
- * plane is (x,z).
- * ---------------------------------------------------------------------- */
 int write_xy_density_pgm(const ParticleSystem *sys, int imgN, const char *filename)
 {
     if (!sys || imgN <= 0 || !filename) {
@@ -71,18 +48,18 @@ int write_xy_density_pgm(const ParticleSystem *sys, int imgN, const char *filena
 #endif
     for (int p = 0; p < Np; ++p) {
         double x = wrap_box(sys->positions[p].x);
-        double z = wrap_box(sys->positions[p].z);
+        double y = wrap_box(sys->positions[p].y);
         double m = sys->masses[p];
 
         int ix = (int)(x / L * imgN);
-        int iz = (int)(z / L * imgN);
+        int iy = (int)(y / L * imgN);
 
         if (ix < 0)        ix = 0;
         if (ix >= imgN)    ix = imgN - 1;
-        if (iz < 0)        iz = 0;
-        if (iz >= imgN)    iz = imgN - 1;
+        if (iy < 0)        iy = 0;
+        if (iy >= imgN)    iy = imgN - 1;
 
-        size_t idx = (size_t)iz * imgN + ix;
+        size_t idx = (size_t)iy * imgN + ix;
 
 #ifdef _OPENMP
 #pragma omp atomic
@@ -95,6 +72,9 @@ int write_xy_density_pgm(const ParticleSystem *sys, int imgN, const char *filena
         if (img[i] > max_val) max_val = img[i];
     if (max_val <= 0.0) max_val = 1.0;
 
+    const double LOG_SCALE = 9.0;
+    const double LOG_DEN   = log(1.0 + LOG_SCALE);
+
 #ifdef _OPENMP
 #pragma omp parallel for schedule(static)
 #endif
@@ -102,7 +82,7 @@ int write_xy_density_pgm(const ParticleSystem *sys, int imgN, const char *filena
         double n = img[i] / max_val;     /* 0..1 */
         if (n < 0.0) n = 0.0;
         if (n > 1.0) n = 1.0;
-        double v = log_stretch(n);
+        double v = log(1.0 + LOG_SCALE * n) / LOG_DEN;
         if (v < 0.0) v = 0.0;
         if (v > 1.0) v = 1.0;
         buf[i] = (unsigned char)(255.0 * v + 0.5);
@@ -128,15 +108,27 @@ int write_xy_density_pgm(const ParticleSystem *sys, int imgN, const char *filena
     return 0;
 }
 
-/* ----------------------------------------------------------------------
- * Color PPM projection onto x每z plane:
- *   - stars: white
- *   - dark matter: purple (red+blue)
- *   - BH: red, overpainted as larger dots
- *   - background: black
- *
- * We still call it write_xy_density_ppm_color for compatibility.
- * ---------------------------------------------------------------------- */
+/* ---------- color PPM version: star=white, BH=red, DM=purple ---------- */
+
+/* simple log stretch 0..1 -> 0..1 */
+static inline double log_stretch(double x)
+{
+    if (x <= 0.0) return 0.0;
+    if (x > 1.0)  x = 1.0;
+    const double S = 9.0;
+    const double D = 1.0 / log(1.0 + S);
+    return log(1.0 + S * x) * D;
+}
+
+/* BH membership test (N_BH is tiny, O(N_BH) is fine) */
+static inline int is_bh_particle(int p, const int *bh_indices, int n_bh)
+{
+    for (int b = 0; b < n_bh; ++b) {
+        if (bh_indices[b] == p) return 1;
+    }
+    return 0;
+}
+
 int write_xy_density_ppm_color(const ParticleSystem *sys,
                                const int *bh_indices,
                                int n_bh,
@@ -156,7 +148,7 @@ int write_xy_density_ppm_color(const ParticleSystem *sys,
 
     size_t npix = (size_t)imgN * imgN;
 
-    /* separate 2D densities: stars, DM, BH */
+    /* separate 2D ※densities§: stars, DM, BH */
     double *star_img = (double*)calloc(npix, sizeof(double));
     double *dm_img   = (double*)calloc(npix, sizeof(double));
     double *bh_img   = (double*)calloc(npix, sizeof(double));
@@ -171,29 +163,30 @@ int write_xy_density_ppm_color(const ParticleSystem *sys,
         return -1;
     }
 
+    /* deposit mass onto pixels */
 #ifdef _OPENMP
 #pragma omp parallel for schedule(static)
 #endif
     for (int p = 0; p < Np; ++p) {
         double x = wrap_box(sys->positions[p].x);
-        double z = wrap_box(sys->positions[p].z);
+        double y = wrap_box(sys->positions[p].y);
         double m = sys->masses[p];
         if (m <= 0.0) continue;
 
         int ix = (int)(x / L * imgN);
-        int iz = (int)(z / L * imgN);
+        int iy = (int)(y / L * imgN);
 
         if (ix < 0)        ix = 0;
         if (ix >= imgN)    ix = imgN - 1;
-        if (iz < 0)        iz = 0;
-        if (iz >= imgN)    iz = imgN - 1;
+        if (iy < 0)        iy = 0;
+        if (iy >= imgN)    iy = imgN - 1;
 
-        size_t idx = (size_t)iz * imgN + ix;
+        size_t idx = (size_t)iy * imgN + ix;
 
         int type = sys->types ? sys->types[p] : 0;
 
         /* choose channel: BH > DM > star */
-        if ( is_bh_particle(p, bh_indices, n_bh)
+        if ( (bh_indices && n_bh > 0 && is_bh_particle(p, bh_indices, n_bh))
 #ifdef TYPE_BH
              || (type == TYPE_BH)
 #endif
@@ -217,6 +210,7 @@ int write_xy_density_ppm_color(const ParticleSystem *sys,
         }
     }
 
+    /* find maxima for scaling */
     double max_star = 0.0, max_dm = 0.0, max_bh = 0.0;
     for (size_t i = 0; i < npix; ++i) {
         if (star_img[i] > max_star) max_star = star_img[i];
@@ -227,26 +221,33 @@ int write_xy_density_ppm_color(const ParticleSystem *sys,
     if (max_dm   <= 0.0) max_dm   = 1.0;
     if (max_bh   <= 0.0) max_bh   = 1.0;
 
+    /* map to RGB:
+     *  - stars: white (R=G=B)
+     *  - DM: purple (R and B, little green)
+     *  - BH: red
+     *  - background: black (no mass)
+     */
 #ifdef _OPENMP
 #pragma omp parallel for schedule(static)
 #endif
-    for (int iz = 0; iz < imgN; ++iz) {
+    for (int iy = 0; iy < imgN; ++iy) {
         for (int ix = 0; ix < imgN; ++ix) {
-            size_t idx = (size_t)iz * imgN + ix;
-            double s = star_img[idx] / max_star;
-            double d = dm_img[idx]   / max_dm;
-            double b = bh_img[idx]   / max_bh;
+            size_t idx = (size_t)iy * imgN + ix;
+            double s = star_img[idx] / max_star;   /* 0..1 */
+            double d = dm_img[idx]   / max_dm;     /* 0..1 */
+            double b = bh_img[idx]   / max_bh;     /* 0..1 */
 
             s = log_stretch(s);
             d = log_stretch(d);
             b = log_stretch(b);
 
-            double red_val, green_val, blue_val;
+            double red, green, blue;
 
             if (s <= 0.0 && d <= 0.0 && b <= 0.0) {
-                red_val = green_val = blue_val = 0.0;
+                /* pure background */
+                red = green = blue = 0.0;
             } else {
-                /* base star field: white */
+                /* base star field: soft white */
                 double star_red   = s;
                 double star_green = s;
                 double star_blue  = s;
@@ -261,34 +262,35 @@ int write_xy_density_ppm_color(const ParticleSystem *sys,
                 double bh_green = 0.0;
                 double bh_blue  = 0.0;
 
-                red_val   = star_red   + dm_red   + bh_red;
-                green_val = star_green + dm_green + bh_green;
-                blue_val  = star_blue  + dm_blue  + bh_blue;
+                red   = star_red   + dm_red   + bh_red;
+                green = star_green + dm_green + bh_green;
+                blue  = star_blue  + dm_blue  + bh_blue;
 
-                /* if BH present in this pixel, enforce red dominance */
+                /* if BH present, force red dominance */
                 if (b > 0.0) {
-                    if (red_val < 1.0) red_val = 1.0;
-                    green_val *= 0.3;
-                    blue_val  *= 0.3;
+                    if (red < 1.0) red = 1.0; /* saturate red */
+                    green *= 0.3;            /* darken green */
+                    blue  *= 0.3;            /* darken blue */
                 }
 
                 /* clamp */
-                if (red_val   > 1.0) red_val   = 1.0;
-                if (green_val > 1.0) green_val = 1.0;
-                if (blue_val  > 1.0) blue_val  = 1.0;
-                if (red_val   < 0.0) red_val   = 0.0;
-                if (green_val < 0.0) green_val = 0.0;
-                if (blue_val  < 0.0) blue_val  = 0.0;
+                if (red   > 1.0) red   = 1.0;
+                if (green > 1.0) green = 1.0;
+                if (blue  > 1.0) blue  = 1.0;
+                if (red   < 0.0) red   = 0.0;
+                if (green < 0.0) green = 0.0;
+                if (blue  < 0.0) blue  = 0.0;
             }
 
-            rgb[3*idx + 0] = (unsigned char)(255.0 * red_val   + 0.5);
-            rgb[3*idx + 1] = (unsigned char)(255.0 * green_val + 0.5);
-            rgb[3*idx + 2] = (unsigned char)(255.0 * blue_val  + 0.5);
+            rgb[3*idx + 0] = (unsigned char)(255.0 * red   + 0.5);
+            rgb[3*idx + 1] = (unsigned char)(255.0 * green + 0.5);
+            rgb[3*idx + 2] = (unsigned char)(255.0 * blue  + 0.5);
         }
     }
 
-    /* Overpaint BHs as larger red dots in x每z plane */
+    /* Overpaint BHs with larger red dots so they are clearly visible */
     if (bh_indices && n_bh > 0) {
+        /* radius in pixels: scale with resolution, min ~2每3 */
         int r_pix = imgN / 128;   /* e.g. 512 -> 4, 256 -> 2 */
         if (r_pix < 2) r_pix = 2;
 
@@ -297,27 +299,28 @@ int write_xy_density_ppm_color(const ParticleSystem *sys,
             if (p < 0 || p >= sys->N) continue;
 
             double x = wrap_box(sys->positions[p].x);
-            double z = wrap_box(sys->positions[p].z);
+            double y = wrap_box(sys->positions[p].y);
 
             int ix = (int)(x / L * imgN);
-            int iz = (int)(z / L * imgN);
+            int iy = (int)(y / L * imgN);
 
             if (ix < 0)      ix = 0;
             if (ix >= imgN)  ix = imgN - 1;
-            if (iz < 0)      iz = 0;
-            if (iz >= imgN)  iz = imgN - 1;
+            if (iy < 0)      iy = 0;
+            if (iy >= imgN)  iy = imgN - 1;
 
-            for (int dz = -r_pix; dz <= r_pix; ++dz) {
-                int jz = iz + dz;
-                if (jz < 0 || jz >= imgN) continue;
+            for (int dy = -r_pix; dy <= r_pix; ++dy) {
+                int jy = iy + dy;
+                if (jy < 0 || jy >= imgN) continue;
                 for (int dx = -r_pix; dx <= r_pix; ++dx) {
                     int jx = ix + dx;
                     if (jx < 0 || jx >= imgN) continue;
+                    /* optional: make it circular instead of square */
                     int ddx = dx;
-                    int ddz = dz;
-                    if (ddx*ddx + ddz*ddz > r_pix*r_pix) continue;
+                    int ddy = dy;
+                    if (ddx*ddx + ddy*ddy > r_pix*r_pix) continue;
 
-                    size_t idx_pix = (size_t)jz * imgN + jx;
+                    size_t idx_pix = (size_t)jy * imgN + jx;
                     rgb[3*idx_pix + 0] = 255;
                     rgb[3*idx_pix + 1] = 0;
                     rgb[3*idx_pix + 2] = 0;

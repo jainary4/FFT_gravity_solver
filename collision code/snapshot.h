@@ -3,20 +3,27 @@
 
 #include "structs.h"
 
-/* Grayscale projection (old version; still available if you want it) */
+/*
+ * Side-on projection (x每z plane), but we keep the old function names
+ * for compatibility with main.c.
+ *
+ * write_xy_density_pgm:
+ *   - grayscale density map in the (x,z) plane
+ *
+ * write_xy_density_ppm_color:
+ *   - color (P6) density map in the (x,z) plane
+ *   - stars:      white
+ *   - dark matter: purple
+ *   - black holes: bright red, overpainted as larger dots
+ *   - background: black
+ */
+
+/* Grayscale projection onto x每z plane */
 int write_xy_density_pgm(const ParticleSystem *sys,
                          int imgN,
                          const char *filename);
 
-/*
- * Color projection onto x每y plane:
- *   - ※normal§ particles (non-BH) ↙ white
- *   - BH particles (by index list) ↙ red
- *   - background ↙ black
- *
- * DM vs stars are not distinguished here (we＊d need your type
- * conventions for that), but BHs are highlighted red.
- */
+/* Color projection onto x每z plane */
 int write_xy_density_ppm_color(const ParticleSystem *sys,
                                const int *bh_indices,
                                int n_bh,
