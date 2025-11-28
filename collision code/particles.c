@@ -81,7 +81,6 @@ void remove_bulk_motion(ParticleSystem *sys)
         sys->velocities[i].z -= v_cm.z;
     }
 
-    /* Recompute to check */
     Px = Py = Pz = 0.0;
     M  = 0.0;
 
@@ -231,8 +230,7 @@ ParticleSystem* initialize_particle_system(void)
     double m_dm   = (F_DM    * M_TOTAL) / (double)N_DM;
     double m_bh   = (F_BH    * M_TOTAL) / (double)N_BH;
 
-    /* Types: 0 = stars, 1 = dark matter, 2 = black holes
-       (matches TYPE_* definitions in bh_collision.h) */
+    /* Types: 0 = stars, 1 = dark matter, 2 = black holes */
 
     /* Stars */
     #pragma omp parallel for
@@ -280,7 +278,7 @@ void destroy_particle_system(ParticleSystem *sys)
     free(sys);
 }
 
-/* Return pointer to the first BH position (contiguous block of length N_BH) */
+/* Return pointer to the first BH position */
 Vector3* get_blackhole_positions(ParticleSystem *sys)
 {
     if (!sys) return NULL;

@@ -110,7 +110,7 @@ void bh_collision_step(ParticleSystem *sys,
                 continue;
             }
 
-            /* Only swallow stars (you can change this to include DM if desired) */
+            /* Only swallow stars */
             if (sys->types[i] != 0) {
                 ++i;
                 continue;

@@ -3,7 +3,7 @@
 
 #include "structs.h"
 
-/* Grayscale projection (old version; still available if you want it) */
+/* Grayscale projection (old) */
 int write_xy_density_pgm(const ParticleSystem *sys,
                          int imgN,
                          const char *filename);

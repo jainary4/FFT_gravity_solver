@@ -29,7 +29,7 @@ static inline double log_stretch(double x)
     return log(1.0 + S * x) * D;
 }
 
-/* BH membership test (N_BH is tiny, so O(N_BH) is fine) */
+
 static inline int is_bh_particle(int p, const int *bh_indices, int n_bh)
 {
     if (!bh_indices || n_bh <= 0) return 0;
@@ -41,8 +41,6 @@ static inline int is_bh_particle(int p, const int *bh_indices, int n_bh)
 
 /* ----------------------------------------------------------------------
  * Grayscale projection onto x¨Cz plane.
- * We keep the old name write_xy_density_pgm for compatibility, but the
- * plane is (x,z).
  * ---------------------------------------------------------------------- */
 int write_xy_density_pgm(const ParticleSystem *sys, int imgN, const char *filename)
 {
@@ -135,7 +133,7 @@ int write_xy_density_pgm(const ParticleSystem *sys, int imgN, const char *filena
  *   - BH: red, overpainted as larger dots
  *   - background: black
  *
- * We still call it write_xy_density_ppm_color for compatibility.
+ * still call it write_xy_density_ppm_color for compatibility.
  * ---------------------------------------------------------------------- */
 int write_xy_density_ppm_color(const ParticleSystem *sys,
                                const int *bh_indices,
@@ -287,7 +285,7 @@ int write_xy_density_ppm_color(const ParticleSystem *sys,
         }
     }
 
-    /* Overpaint BHs as larger red dots in x¨Cz plane */
+    /* paint BHs as larger red dots in x¨Cz plane */
     if (bh_indices && n_bh > 0) {
         int r_pix = imgN / 128;   /* e.g. 512 -> 4, 256 -> 2 */
         if (r_pix < 2) r_pix = 2;

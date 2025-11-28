@@ -3,8 +3,6 @@
 
 #include "structs.h"
 
-/* Thread-safe random number utilities (OpenMP-aware). */
-
 /* Uniform in [min, max]. */
 double random_uniform(double min, double max);
 

@@ -12,10 +12,6 @@
  *   - sys->accelerations must contain a(q) for each particle.
  *
  * 'ctx' is an opaque pointer you can use to pass in mesh / FFT / etc.
- * For example, ctx might wrap:
- *   - padded rho grid
- *   - FFT plans
- *   - force_x, force_y, force_z grids
  */
 typedef void (*ForceFunc)(ParticleSystem *sys, void *ctx);
 

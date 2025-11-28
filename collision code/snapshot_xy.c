@@ -108,7 +108,7 @@ int write_xy_density_pgm(const ParticleSystem *sys, int imgN, const char *filena
     return 0;
 }
 
-/* ---------- color PPM version: star=white, BH=red, DM=purple ---------- */
+/* ---------- color PPM version: star=white, BH=red ---------- */
 
 /* simple log stretch 0..1 -> 0..1 */
 static inline double log_stretch(double x)

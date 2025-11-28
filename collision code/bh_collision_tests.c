@@ -8,7 +8,7 @@
 #include "mesh.h"
 #include "bh_collision.h"
 
-/* Small epsilon for comparisons in tests (double-precision now). */
+/* Small epsilon for comparisons in tests.*/
 static const double EPS_MASS   = 1e-8;
 static const double EPS_MOMENT = 1e-6;
 
@@ -55,7 +55,6 @@ static int test_empty_system(void)
     int  n_bh       = 0;
     int *bh_indices = NULL;
 
-    /* Should not crash or change anything. */
     bh_collision_step(&sys, bh_indices, &n_bh);
 
     if (sys.N != 0 || n_bh != 0) {
@@ -282,7 +281,6 @@ static int test_star_no_collision_outside_radius(void)
 
     int ok = 1;
 
-    /* Here we require exactly 2 particles and unchanged types. */
     if (sys.N != 2) {
         printf("  test3: expected sys.N=2 (no swallowing), got %d\n", sys.N);
         ok = 0;

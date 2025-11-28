@@ -14,11 +14,8 @@
  *   - BH¨Cstar:   star inside BH_STAR_COLLISION_RADIUS is swallowed.
  *   - BH¨CBH:     BHs within BH_BH_COLLISION_RADIUS are merged.
  *
- * Radii are in code units (kpc); you can tweak them to change how fast
- * the BH grows.
+ * Radii are in code units (kpc);
  */
-
-/* Only define if not defined elsewhere, so you can override in constants.h */
 #ifndef BH_STAR_COLLISION_RADIUS
 #define BH_STAR_COLLISION_RADIUS   0.5   /* BH¨Cstar swallow radius (kpc) */
 #endif
@@ -45,4 +42,4 @@ void bh_collision_step(ParticleSystem *sys,
                        int *bh_indices,
                        int *n_bh);
 
-#endif /* BH_COLLISION_H */
+#endif

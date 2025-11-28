@@ -11,16 +11,6 @@
 #include "structs.h"
 #include "random.h"
 
-/* --------------------------------------------------------------------------
-   Thread-safe RNG, OpenMP-aware
-
-   We keep one RNG state per OpenMP thread, plus a separate Box¨CMuller
-   "spare" value per thread for random_gaussian.
-
-   IMPORTANT: this version avoids any 'return' from inside an OpenMP
-   structured block, to keep ICC 15 happy.
-   -------------------------------------------------------------------------- */
-
 static int           rng_initialized = 0;
 static int           rng_nthreads    = 1;
 static unsigned int *rng_seeds       = NULL;
@@ -72,8 +62,7 @@ static void rng_init(void)
         exit(EXIT_FAILURE);
     }
 
-    /* Deterministic initialisation (fixed seeds).
-       If you want different numbers every run, you can mix in time(NULL) here. */
+    /* Deterministic initialisation (fixed seeds). */
     for (int i = 0; i < rng_nthreads; ++i) {
         rng_seeds[i]     = 123456789u + 362437u * (unsigned int)i;
         rng_has_spare[i] = 0;

@@ -43,7 +43,7 @@ void destroy_particle_mesh(ParticleMesh *pm) {
     free(pm);
 }
 
-// FIX 2: Updated mass assignment to support isolated boundaries (no wrapping).
+// Updated mass assignment to support isolated boundaries (no wrapping).
 // Particles are allowed to enter the padded region. If they leave the padded
 // region entirely, they are ignored (mass lost).
 void assign_mass_cic_padded(double ***rho_pad, int Np, ParticleSystem *sys, int N, double h, int offset) {
@@ -121,7 +121,7 @@ void assign_mass_cic_padded(double ***rho_pad, int Np, ParticleSystem *sys, int 
     // printf("CIC padded mass assignment: %.2f seconds\n", t_end - t_start);
 }
 
-// FIX 2: Updated force gather to support isolated boundaries.
+// Updated force gather to support isolated boundaries.
 // Particles drift into the padded region and interpolate forces from there.
 // If a particle leaves the padded box completely, it feels zero force.
 void gather_forces_to_particles(
@@ -167,9 +167,9 @@ void gather_forces_to_particles(
         // 6. Interpolate forces from 8 corners
         double Fx = 0.0, Fy = 0.0, Fz = 0.0;
         
-        // FIX: Verify the particle is inside the interpolation region of the padded grid.
-        // We need (i, j, k) and (i+1, j+1, k+1) to be within [0, Np-1].
-        // So the base indices (after offset) must be < Np - 1.
+        // Verify the particle is inside the interpolation region of the padded grid.
+        // need (i, j, k) and (i+1, j+1, k+1) to be within [0, Np-1].
+        // the base indices (after offset) must be < Np - 1.
         
         int i_base = offset + i0;
         int j_base = offset + j0;

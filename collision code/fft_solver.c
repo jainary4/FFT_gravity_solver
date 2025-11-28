@@ -16,7 +16,7 @@ double*** solve_poisson_fftw(double ***laplacian_phi_pad, int N, double h) {
 
     int N3 = N * N * N;  // total number of cells
 
-    // Allocate output potential array (3D contiguous-backed)
+    // Allocate output potential array
     double ***phi_pad = allocate_3d_array(N);
     if (!phi_pad) {
         fprintf(stderr, "allocate_3d_array failed for phi_pad\n");
@@ -34,7 +34,7 @@ double*** solve_poisson_fftw(double ***laplacian_phi_pad, int N, double h) {
     }
 
     // Copy real input (laplacian_phi_pad) into complex input array (imag = 0)
-    // Parallelized for speed
+    // Parallelized
     #pragma omp parallel for collapse(3)
     for (int i = 0; i < N; i++) {
         for (int j = 0; j < N; j++) {
@@ -72,13 +72,13 @@ double*** solve_poisson_fftw(double ***laplacian_phi_pad, int N, double h) {
     // Precompute a scale-aware small threshold for k^2 to protect division by near-zero.
     // We scale with machine epsilon and an estimate of maximum discrete k^2.
     double k2_max_est = 12.0 / (h * h);                 // approx upper bound for discrete k^2
-    double threshold  = DBL_EPSILON * k2_max_est * 100.0; // safety factor 100 (tunable)
+    double threshold  = DBL_EPSILON * k2_max_est * 100.0; // safety factor 100
 
     // Apply Green's function in Fourier space for each mode.
     // out[idx] currently contains (4πGρ)^(k); overwrite it with φ^(k) = -(4πGρ)^(k) / k^2_discrete
     //
     // We iterate over all grid indices (0..N-1) and map them to signed frequency indices
-    // via ki = (i <= N/2) ? i : i - N, etc.
+    // via ki = (i <= N/2)  i : i - N, etc.
     #pragma omp parallel for collapse(3)
     for (int i = 0; i < N; i++) {
         for (int j = 0; j < N; j++) {

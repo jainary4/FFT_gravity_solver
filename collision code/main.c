@@ -14,7 +14,7 @@
 #include "fft_solver.h"
 #include "force.h"
 #include "integrator.h"
-#include "snapshot.h"   /* for write_xy_density_pgm() */
+#include "snapshot.h"   /* for write_xy_density_frames() */
 #include "bh_collision.h"
 
 /* ------------------------------------------------------------
@@ -30,7 +30,7 @@ static inline double wrap_box(double x)
 
 /* ------------------------------------------------------------
  * Periodic minimum-image separation in one dimension
- * (not used directly here anymore, but kept for possible debug)
+ * do not delete, keep for debug!
  * ------------------------------------------------------------ */
 static inline double periodic_delta(double dx)
 {
@@ -40,7 +40,7 @@ static inline double periodic_delta(double dx)
 }
 
 /* ------------------------------------------------------------
- * Optional: write a 3D field to text (debug)
+ * write a 3D field to text (debug)
  * ------------------------------------------------------------ */
 int write_to_txt(double ***phi, int N, const char *filepath)
 {
@@ -253,7 +253,7 @@ static void gravity_fft_force(ParticleSystem *sys, void *vctx)
     const int Np = ctx->Np;
     ParticleMesh *pm = ctx->pm;
     const double h = pm->cell_size;
-    const int offset = ctx->offset;  /* currently 0 */
+    const int offset = ctx->offset;
 
     /* 1) Zero padded density grid */
 #ifdef _OPENMP
@@ -303,7 +303,7 @@ static void gravity_fft_force(ParticleSystem *sys, void *vctx)
 }
 
 /* ------------------------------------------------------------
- * Virialization by velocity rescaling (does NOT move positions)
+ * Virialization by velocity rescaling
  * ------------------------------------------------------------ */
 static void rescale_velocities_to_target_virial(ParticleSystem *sys,
                                                 GravityFFTContext *gctx,
